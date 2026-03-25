@@ -762,7 +762,8 @@ def _take_aws_service_screenshots(account_id, iam_username, iam_password, region
         # ── Step 1: IAM console login ──────────────────────────────────────
         signin_url = f"https://{account_id}.signin.aws.amazon.com/console"
         try:
-            page.goto(signin_url, wait_until="domcontentloaded", timeout=30000)
+            page.goto(signin_url, wait_until="commit", timeout=60000)
+            page.wait_for_timeout(3000)  # let sign-in page JS render
         except PlaywrightTimeout:
             logger.error("Timed out loading AWS sign-in page")
             browser.close()
@@ -863,8 +864,8 @@ def _take_aws_service_screenshots(account_id, iam_username, iam_password, region
             url = page_def["url"].replace("{region}", region)
 
             try:
-                page.goto(url, wait_until="domcontentloaded", timeout=30000)
-                page.wait_for_timeout(3000)  # let dynamic content load
+                page.goto(url, wait_until="commit", timeout=60000)
+                page.wait_for_timeout(5000)  # let dynamic content load
 
                 raw = page.screenshot(full_page=False)
                 file_id, filepath, filename = _save_screenshot(raw, "aws", label)
@@ -1227,8 +1228,8 @@ def _take_aws_screenshots_browser(account_id, iam_username, iam_password, region
             # ── Step 1: Navigate to IAM sign-in page ──
             signin_url = f"https://{account_id}.signin.aws.amazon.com/console"
             logger.info(f"AWS browser login: navigating to {signin_url}")
-            page.goto(signin_url, wait_until="domcontentloaded", timeout=30000)
-            time.sleep(3)
+            page.goto(signin_url, wait_until="commit", timeout=60000)
+            time.sleep(5)
 
             logger.info(f"AWS browser login: landed on {page.url}, title: {page.title()}")
 
@@ -1398,7 +1399,7 @@ def _take_aws_screenshots_browser(account_id, iam_username, iam_password, region
             ]
             for label, target_url, description in pages_to_capture:
                 try:
-                    page.goto(target_url, wait_until="domcontentloaded", timeout=30000)
+                    page.goto(target_url, wait_until="commit", timeout=60000)
                     # Wait for React/Angular to render
                     try:
                         page.wait_for_load_state("networkidle", timeout=10000)
@@ -2514,7 +2515,7 @@ def _take_datadog_screenshots(email, password, pages, site="datadoghq.com"):
 
         # ── Step 1: Navigate to Datadog login ─────────────────────────────────
         try:
-            page.goto(f"{base_url}/account/login", wait_until="domcontentloaded", timeout=30000)
+            page.goto(f"{base_url}/account/login", wait_until="commit", timeout=60000)
             page.wait_for_timeout(2000)
         except PlaywrightTimeout:
             logger.error("Datadog: timed out loading login page")
@@ -2626,7 +2627,7 @@ def _take_datadog_screenshots(email, password, pages, site="datadoghq.com"):
             url = base_url + page_info["url"]
 
             try:
-                page.goto(url, wait_until="domcontentloaded", timeout=20000)
+                page.goto(url, wait_until="commit", timeout=60000)
                 page.wait_for_timeout(4000)
 
                 screenshot_bytes = page.screenshot(full_page=False)
