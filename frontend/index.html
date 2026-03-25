@@ -1,0 +1,792 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Evidence Integrity Agent — AI-Powered Digital Forensics</title>
+    <meta name="description" content="AI-powered evidence integrity verification system using multi-agent analysis for screenshots, logs, and digital documents.">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="css/styles.css">
+</head>
+<body>
+    <!-- Particle Canvas Background -->
+    <canvas id="particles-canvas"></canvas>
+
+    <!-- Ambient Glow Orbs -->
+    <div class="ambient-orb orb-1"></div>
+    <div class="ambient-orb orb-2"></div>
+    <div class="ambient-orb orb-3"></div>
+
+    <!-- Navigation -->
+    <nav class="nav-bar" id="navbar">
+        <div class="nav-brand">
+            <div class="brand-icon">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>
+                    <path d="M9 12l2 2 4-4"/>
+                </svg>
+            </div>
+            <span class="brand-text">Evidence<span class="brand-accent">Integrity</span></span>
+        </div>
+        <div class="nav-links">
+            <a href="#" class="nav-link active" data-section="upload" id="nav-upload">
+                <span class="nav-icon">⬆</span> Upload
+            </a>
+            <a href="#" class="nav-link" data-section="compliance" id="nav-compliance">
+                <span class="nav-icon">☁</span> Cloud Compliance
+            </a>
+            <a href="#" class="nav-link" data-section="results" id="nav-results">
+                <span class="nav-icon">📊</span> Results
+            </a>
+            <a href="#" class="nav-link" data-section="history" id="nav-history">
+                <span class="nav-icon">📋</span> History
+            </a>
+        </div>
+        <div class="nav-status">
+            <div class="status-dot" id="api-status"></div>
+            <span class="status-text" id="api-status-text">Connecting...</span>
+        </div>
+    </nav>
+
+    <!-- Main Content -->
+    <main class="main-content">
+        <!-- SECTION: Upload -->
+        <section class="section active" id="section-upload">
+            <div class="section-header">
+                <h1 class="hero-title">
+                    <span class="title-line">AI-Powered</span>
+                    <span class="title-line gradient-text">Evidence Integrity</span>
+                    <span class="title-line">Verification</span>
+                </h1>
+                <p class="hero-subtitle">Upload screenshots, logs, or documents — our multi-agent AI pipeline will analyze authenticity, detect tampering, and generate comprehensive integrity reports.</p>
+            </div>
+
+            <!-- Feature Cards -->
+            <div class="feature-grid">
+                <div class="feature-card" data-delay="0">
+                    <div class="feature-icon">🔍</div>
+                    <h3>Metadata Analysis</h3>
+                    <p>EXIF extraction, timestamp verification, editing software detection</p>
+                </div>
+                <div class="feature-card" data-delay="100">
+                    <div class="feature-icon">🔐</div>
+                    <h3>Hash Verification</h3>
+                    <p>SHA-256, MD5, perceptual hashing and duplicate detection</p>
+                </div>
+                <div class="feature-card" data-delay="200">
+                    <div class="feature-icon">👁️</div>
+                    <h3>Visual AI Analysis</h3>
+                    <p>Amazon Nova Lite vision for pixel-level tampering detection and ELA</p>
+                </div>
+                <div class="feature-card" data-delay="300">
+                    <div class="feature-icon">🧠</div>
+                    <h3>RAG Intelligence</h3>
+                    <p>Pattern matching against known evidence manipulation techniques</p>
+                </div>
+            </div>
+
+            <!-- Upload Zone -->
+            <div class="upload-container">
+                <div class="upload-zone" id="upload-zone">
+                    <div class="upload-icon-wrapper">
+                        <div class="upload-pulse"></div>
+                        <div class="upload-icon">
+                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+                                <path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/>
+                                <polyline points="17 8 12 3 7 8"/>
+                                <line x1="12" y1="3" x2="12" y2="15"/>
+                            </svg>
+                        </div>
+                    </div>
+                    <h3 class="upload-title">Drop Evidence Here</h3>
+                    <p class="upload-text">or click to browse files</p>
+                    <p class="upload-formats">Supports: PNG, JPG, GIF, WebP, PDF, LOG, TXT, CSV, JSON</p>
+                    <input type="file" id="file-input" hidden accept=".png,.jpg,.jpeg,.gif,.bmp,.tiff,.webp,.pdf,.log,.txt,.csv,.json,.xml">
+                </div>
+
+                <!-- File Preview (hidden by default) -->
+                <div class="file-preview" id="file-preview" style="display: none;">
+                    <div class="preview-card">
+                        <div class="preview-image-container" id="preview-image-container" style="display: none;">
+                            <img id="preview-image" alt="File preview">
+                        </div>
+                        <div class="preview-info">
+                            <div class="preview-icon" id="preview-icon">📄</div>
+                            <h4 id="preview-filename">filename.png</h4>
+                            <div class="preview-meta">
+                                <span id="preview-size">0 KB</span>
+                                <span class="preview-divider">•</span>
+                                <span id="preview-type">image/png</span>
+                            </div>
+                        </div>
+                        <div class="preview-actions">
+                            <button class="btn btn-ghost" id="btn-remove-file">
+                                <span>✕</span> Remove
+                            </button>
+                            <button class="btn btn-primary btn-glow" id="btn-analyze">
+                                <span class="btn-icon">🔬</span> Analyze Evidence
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <!-- SECTION: Processing -->
+        <section class="section" id="section-processing">
+            <div class="processing-container">
+                <h2 class="processing-title">
+                    <span class="processing-spinner"></span>
+                    Analyzing Evidence
+                </h2>
+                <p class="processing-subtitle" id="processing-filename">file.png</p>
+
+                <!-- Agent Pipeline Visualization -->
+                <div class="pipeline">
+                    <div class="pipeline-agent" id="agent-metadata" data-status="waiting">
+                        <div class="agent-node">
+                            <div class="agent-icon">🔍</div>
+                            <div class="agent-progress"></div>
+                        </div>
+                        <span class="agent-label">Metadata</span>
+                        <span class="agent-status-text">Waiting</span>
+                    </div>
+                    <div class="pipeline-connector"></div>
+                    <div class="pipeline-agent" id="agent-hash" data-status="waiting">
+                        <div class="agent-node">
+                            <div class="agent-icon">🔐</div>
+                            <div class="agent-progress"></div>
+                        </div>
+                        <span class="agent-label">Hash</span>
+                        <span class="agent-status-text">Waiting</span>
+                    </div>
+                    <div class="pipeline-connector"></div>
+                    <div class="pipeline-agent" id="agent-visual" data-status="waiting">
+                        <div class="agent-node">
+                            <div class="agent-icon">👁️</div>
+                            <div class="agent-progress"></div>
+                        </div>
+                        <span class="agent-label">Visual AI</span>
+                        <span class="agent-status-text">Waiting</span>
+                    </div>
+                    <div class="pipeline-connector"></div>
+                    <div class="pipeline-agent" id="agent-rag" data-status="waiting">
+                        <div class="agent-node">
+                            <div class="agent-icon">🧠</div>
+                            <div class="agent-progress"></div>
+                        </div>
+                        <span class="agent-label">RAG</span>
+                        <span class="agent-status-text">Waiting</span>
+                    </div>
+                    <div class="pipeline-connector"></div>
+                    <div class="pipeline-agent" id="agent-report" data-status="waiting">
+                        <div class="agent-node">
+                            <div class="agent-icon">📋</div>
+                            <div class="agent-progress"></div>
+                        </div>
+                        <span class="agent-label">Report</span>
+                        <span class="agent-status-text">Waiting</span>
+                    </div>
+                </div>
+
+                <div class="processing-log" id="processing-log">
+                    <div class="log-entry">Initializing analysis pipeline...</div>
+                </div>
+            </div>
+        </section>
+
+        <!-- SECTION: Cloud Compliance -->
+        <section class="section" id="section-compliance">
+            <div class="section-header">
+                <h1 class="hero-title">
+                    <span class="title-line">Cloud Security</span>
+                    <span class="title-line gradient-text">Compliance Check</span>
+                </h1>
+                <p class="hero-subtitle">Verify encryption policies and security settings across AWS, Azure, and GitHub using automated browser analysis with AI-powered verification.</p>
+            </div>
+
+            <!-- Provider Tabs -->
+            <div class="cc-tabs" id="cc-tabs">
+                <button class="cc-tab cc-tab--active" data-provider="aws" id="tab-aws">
+                    <div class="cc-tab__icon-wrap cc-tab__icon-wrap--aws">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M19.5 6c-1.5 3-4.5 8-7.5 8S5 9 3.5 6"/><path d="M3 17.5C5 16 8 14 12 14s7 2 9 3.5"/><path d="M12 14v6"/></svg>
+                    </div>
+                    <div class="cc-tab__text">
+                        <span class="cc-tab__name">AWS</span>
+                        <span class="cc-tab__check">Service Analysis</span>
+                    </div>
+                </button>
+                <button class="cc-tab" data-provider="azure" id="tab-azure">
+                    <div class="cc-tab__icon-wrap cc-tab__icon-wrap--azure">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M13.05 4.24l-3.83 7.52 4.68 5.58H7.1L3 21h14.42l-4.37-16.76z"/><path d="M10.5 13l5.5-1.5L21 21"/></svg>
+                    </div>
+                    <div class="cc-tab__text">
+                        <span class="cc-tab__name">Azure</span>
+                        <span class="cc-tab__check">SQL Encryption</span>
+                    </div>
+                </button>
+                <button class="cc-tab" data-provider="github" id="tab-github">
+                    <div class="cc-tab__icon-wrap cc-tab__icon-wrap--github">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M9 19c-5 1.5-5-2.5-7-3m14 6v-3.87a3.37 3.37 0 00-.94-2.61c3.14-.35 6.44-1.54 6.44-7A5.44 5.44 0 0020 4.77 5.07 5.07 0 0019.91 1S18.73.65 16 2.48a13.38 13.38 0 00-7 0C6.27.65 5.09 1 5.09 1A5.07 5.07 0 005 4.77a5.44 5.44 0 00-1.5 3.78c0 5.42 3.3 6.61 6.44 7A3.37 3.37 0 009 18.13V22"/></svg>
+                    </div>
+                    <div class="cc-tab__text">
+                        <span class="cc-tab__name">GitHub</span>
+                        <span class="cc-tab__check">MFA Status</span>
+                    </div>
+                </button>
+                <button class="cc-tab" data-provider="datadog" id="tab-datadog">
+                    <div class="cc-tab__icon-wrap cc-tab__icon-wrap--datadog">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M12 2L2 7l10 5 10-5-10-5z"/><path d="M2 17l10 5 10-5"/><path d="M2 12l10 5 10-5"/></svg>
+                    </div>
+                    <div class="cc-tab__text">
+                        <span class="cc-tab__name">Datadog</span>
+                        <span class="cc-tab__check">Service Analysis</span>
+                    </div>
+                </button>
+            </div>
+
+            <!-- Credentials Container -->
+            <div class="cc-credentials-wrap" id="cc-credentials-wrap">
+                <!-- AWS Panel -->
+                <div class="cc-panel" id="panel-aws" style="display: block;">
+
+                    <!-- Step 1: Credentials -->
+                    <div id="aws-step-credentials">
+                        <div class="cc-card">
+                            <div class="cc-card__header">
+                                <div class="cc-card__header-icon cc-card__header-icon--aws">
+                                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M19.5 6c-1.5 3-4.5 8-7.5 8S5 9 3.5 6"/><path d="M3 17.5C5 16 8 14 12 14s7 2 9 3.5"/><path d="M12 14v6"/></svg>
+                                </div>
+                                <div>
+                                    <h3 class="cc-card__title">AWS Credentials</h3>
+                                    <p class="cc-card__subtitle">Step 1 of 2 — Enter your IAM credentials</p>
+                                </div>
+                            </div>
+                            <div class="cc-form">
+                                <div class="cc-form__group">
+                                    <label class="cc-form__label" for="aws-access-key">Access Key ID <span style="color:rgba(255,255,255,0.35);font-weight:400;">(optional)</span></label>
+                                    <div class="cc-form__input-wrap">
+                                        <svg class="cc-form__input-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0110 0v4"/></svg>
+                                        <input class="cc-form__input" type="text" id="aws-access-key" placeholder="AKIAIOSFODNN7EXAMPLE" autocomplete="off" spellcheck="false">
+                                    </div>
+                                </div>
+                                <div class="cc-form__group">
+                                    <label class="cc-form__label" for="aws-secret-key">Secret Access Key <span style="color:rgba(255,255,255,0.35);font-weight:400;">(optional)</span></label>
+                                    <div class="cc-form__input-wrap">
+                                        <svg class="cc-form__input-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M21 2l-2 2m-7.61 7.61a5.5 5.5 0 11-7.778 7.778 5.5 5.5 0 017.777-7.777zm0 0L15.5 7.5m0 0l3 3L22 7l-3-3m-3.5 3.5L19 4"/></svg>
+                                        <input class="cc-form__input" type="password" id="aws-secret-key" placeholder="wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY" autocomplete="off">
+                                    </div>
+                                </div>
+                                <div class="cc-form__group">
+                                    <label class="cc-form__label" for="aws-region">Region</label>
+                                    <div class="cc-form__input-wrap">
+                                        <svg class="cc-form__input-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="12" cy="12" r="10"/><path d="M2 12h20M12 2a15.3 15.3 0 014 10 15.3 15.3 0 01-4 10 15.3 15.3 0 01-4-10 15.3 15.3 0 014-10z"/></svg>
+                                        <select class="cc-form__select" id="aws-region">
+                                            <option value="us-east-1">US East (N. Virginia)</option>
+                                            <option value="us-east-2">US East (Ohio)</option>
+                                            <option value="us-west-1">US West (N. California)</option>
+                                            <option value="us-west-2">US West (Oregon)</option>
+                                            <option value="eu-west-1">EU (Ireland)</option>
+                                            <option value="eu-central-1">EU (Frankfurt)</option>
+                                            <option value="ap-south-1">Asia Pacific (Mumbai)</option>
+                                            <option value="ap-southeast-1">Asia Pacific (Singapore)</option>
+                                            <option value="ap-northeast-1">Asia Pacific (Tokyo)</option>
+                                        </select>
+                                    </div>
+                                </div>
+                                <!-- Console login separator -->
+                                <div style="display:flex;align-items:center;gap:12px;margin:16px 0 8px;">
+                                    <div style="flex:1;height:1px;background:rgba(255,255,255,0.1);"></div>
+                                    <span style="color:rgba(255,255,255,0.35);font-size:0.75rem;font-weight:600;letter-spacing:0.1em;">IAM CONSOLE LOGIN</span>
+                                    <div style="flex:1;height:1px;background:rgba(255,255,255,0.1);"></div>
+                                </div>
+                                <div class="cc-form__group">
+                                    <label class="cc-form__label" for="aws-account-id">Account ID</label>
+                                    <div class="cc-form__input-wrap">
+                                        <svg class="cc-form__input-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M9 9h6M9 12h6M9 15h4"/></svg>
+                                        <input class="cc-form__input" type="text" id="aws-account-id" placeholder="123456789012" autocomplete="off" spellcheck="false">
+                                    </div>
+                                </div>
+                                <div class="cc-form__group">
+                                    <label class="cc-form__label" for="aws-iam-username">IAM Username</label>
+                                    <div class="cc-form__input-wrap">
+                                        <svg class="cc-form__input-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M20 21v-2a4 4 0 00-4-4H8a4 4 0 00-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>
+                                        <input class="cc-form__input" type="text" id="aws-iam-username" placeholder="my-iam-user" autocomplete="off" spellcheck="false">
+                                    </div>
+                                </div>
+                                <div class="cc-form__group">
+                                    <label class="cc-form__label" for="aws-iam-password">IAM Password</label>
+                                    <div class="cc-form__input-wrap">
+                                        <svg class="cc-form__input-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0110 0v4"/></svg>
+                                        <input class="cc-form__input" type="password" id="aws-iam-password" placeholder="Console password" autocomplete="off">
+                                    </div>
+                                </div>
+                                <button class="btn btn-primary btn-glow cc-form__submit" id="btn-aws-next" disabled>
+                                    <span class="btn-icon">
+                                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="18" height="18"><path d="M5 12h14M12 5l7 7-7 7"/></svg>
+                                    </span>
+                                    Select Service
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Step 2: Service Selection -->
+                    <div id="aws-step-service" style="display:none;">
+                        <div class="cc-card">
+                            <div class="cc-card__header" style="margin-bottom:0;">
+                                <div class="cc-card__header-icon cc-card__header-icon--aws">
+                                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg>
+                                </div>
+                                <div style="flex:1;">
+                                    <h3 class="cc-card__title">Select AWS Service</h3>
+                                    <p class="cc-card__subtitle">Step 2 of 3 — Choose a service to analyze</p>
+                                </div>
+                                <button class="btn btn-ghost" id="btn-aws-back" style="padding:8px 14px;font-size:0.8rem;">
+                                    ← Back
+                                </button>
+                            </div>
+                            <!-- Service grid populated by JS -->
+                            <div id="aws-service-grid" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(160px,1fr));gap:12px;margin-top:20px;"></div>
+                        </div>
+                    </div>
+
+                    <!-- Step 3: Check Selection -->
+                    <div id="aws-step-checks" style="display:none;">
+                        <div class="cc-card">
+                            <div class="cc-card__header" style="margin-bottom:0;">
+                                <div class="cc-card__header-icon cc-card__header-icon--aws">
+                                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M9 12l2 2 4-4"/><rect x="3" y="3" width="18" height="18" rx="2"/></svg>
+                                </div>
+                                <div style="flex:1;">
+                                    <h3 class="cc-card__title">Select Compliance Check</h3>
+                                    <p class="cc-card__subtitle">Step 3 of 3 — Choose a specific check to run</p>
+                                </div>
+                                <button class="btn btn-ghost" id="btn-aws-back-checks" style="padding:8px 14px;font-size:0.8rem;">
+                                    ← Back
+                                </button>
+                            </div>
+                            <!-- Check grid populated by JS -->
+                            <div id="aws-check-grid" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:12px;margin-top:20px;"></div>
+                            <button class="btn btn-primary btn-glow cc-form__submit" id="btn-run-aws" disabled style="margin-top:20px;">
+                                <span class="btn-icon">
+                                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="18" height="18"><circle cx="11" cy="11" r="4"/><path d="M21 21l-4.35-4.35"/><path d="M11 8v6M8 11h6"/></svg>
+                                </span>
+                                Run Analysis
+                            </button>
+                        </div>
+                    </div>
+
+                </div>
+
+                <!-- Azure Panel -->
+                <div class="cc-panel" id="panel-azure" style="display: none;">
+                    <div class="cc-card">
+                        <div class="cc-card__header">
+                            <div class="cc-card__header-icon cc-card__header-icon--azure">
+                                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M13.05 4.24l-3.83 7.52 4.68 5.58H7.1L3 21h14.42l-4.37-16.76z"/><path d="M10.5 13l5.5-1.5L21 21"/></svg>
+                            </div>
+                            <div>
+                                <h3 class="cc-card__title">Azure Credentials</h3>
+                                <p class="cc-card__subtitle">Check SQL Database & Data Warehouse encryption policy</p>
+                            </div>
+                        </div>
+                        <div class="cc-form">
+                            <!-- Option 1: Access Token (easiest for student accounts) -->
+                            <div class="cc-form__group">
+                                <label class="cc-form__label" for="azure-access-token">Access Token <span style="color: rgba(96,165,250,0.8); font-weight: 400; font-size: 0.75rem;">(recommended for student accounts)</span></label>
+                                <div class="cc-form__input-wrap">
+                                    <svg class="cc-form__input-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M21 2l-2 2m-7.61 7.61a5.5 5.5 0 11-7.778 7.778 5.5 5.5 0 017.777-7.777zm0 0L15.5 7.5m0 0l3 3L22 7l-3-3m-3.5 3.5L19 4"/></svg>
+                                    <input class="cc-form__input" type="password" id="azure-access-token" placeholder="Paste token from: az account get-access-token --query accessToken -o tsv" autocomplete="off">
+                                </div>
+                                <span style="color: rgba(255,255,255,0.4); font-size: 0.7rem; margin-top: 4px; display: block;">Run <code style="background: rgba(255,255,255,0.08); padding: 1px 5px; border-radius: 3px;">az account get-access-token --query accessToken -o tsv</code> to get this token</span>
+                            </div>
+
+                            <!-- OR divider -->
+                            <div style="display: flex; align-items: center; gap: 12px; margin: 8px 0;">
+                                <div style="flex: 1; height: 1px; background: rgba(255,255,255,0.1);"></div>
+                                <span style="color: rgba(255,255,255,0.35); font-size: 0.75rem; font-weight: 600; letter-spacing: 0.1em;">OR</span>
+                                <div style="flex: 1; height: 1px; background: rgba(255,255,255,0.1);"></div>
+                            </div>
+
+                            <!-- Option 2: Service Principal credentials -->
+                            <div class="cc-form__group">
+                                <label class="cc-form__label" for="azure-tenant-id">Tenant ID</label>
+                                <div class="cc-form__input-wrap">
+                                    <svg class="cc-form__input-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M20 21v-2a4 4 0 00-4-4H8a4 4 0 00-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>
+                                    <input class="cc-form__input" type="text" id="azure-tenant-id" placeholder="xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx" autocomplete="off" spellcheck="false">
+                                </div>
+                            </div>
+                            <div class="cc-form__group">
+                                <label class="cc-form__label" for="azure-client-id">Client ID (App ID)</label>
+                                <div class="cc-form__input-wrap">
+                                    <svg class="cc-form__input-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0110 0v4"/></svg>
+                                    <input class="cc-form__input" type="text" id="azure-client-id" placeholder="xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx" autocomplete="off" spellcheck="false">
+                                </div>
+                            </div>
+                            <div class="cc-form__group">
+                                <label class="cc-form__label" for="azure-client-secret">Client Secret</label>
+                                <div class="cc-form__input-wrap">
+                                    <svg class="cc-form__input-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M21 2l-2 2m-7.61 7.61a5.5 5.5 0 11-7.778 7.778 5.5 5.5 0 017.777-7.777zm0 0L15.5 7.5m0 0l3 3L22 7l-3-3m-3.5 3.5L19 4"/></svg>
+                                    <input class="cc-form__input" type="password" id="azure-client-secret" placeholder="Enter your client secret" autocomplete="off">
+                                </div>
+                            </div>
+                            <div class="cc-form__info">
+                                <div class="cc-form__info-icon">
+                                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/><path d="M9 12l2 2 4-4"/></svg>
+                                </div>
+                                <div>
+                                    <strong>SQL Database & Data Warehouse Encryption (TDE)</strong>
+                                    <span>Verifies Transparent Data Encryption across Azure SQL Databases and Synapse Analytics via Activity Logs.</span>
+                                </div>
+                            </div>
+                            <button class="btn btn-primary btn-glow cc-form__submit" id="btn-run-azure" disabled>
+                                <span class="btn-icon">
+                                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="18" height="18"><circle cx="11" cy="11" r="4"/><path d="M21 21l-4.35-4.35"/><path d="M11 8v6M8 11h6"/></svg>
+                                </span>
+                                Run Analysis
+                            </button>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- GitHub Panel -->
+                <div class="cc-panel" id="panel-github" style="display: none;">
+                    <div class="cc-card">
+                        <div class="cc-card__header">
+                            <div class="cc-card__header-icon cc-card__header-icon--github">
+                                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M9 19c-5 1.5-5-2.5-7-3m14 6v-3.87a3.37 3.37 0 00-.94-2.61c3.14-.35 6.44-1.54 6.44-7A5.44 5.44 0 0020 4.77 5.07 5.07 0 0019.91 1S18.73.65 16 2.48a13.38 13.38 0 00-7 0C6.27.65 5.09 1 5.09 1A5.07 5.07 0 005 4.77a5.44 5.44 0 00-1.5 3.78c0 5.42 3.3 6.61 6.44 7A3.37 3.37 0 009 18.13V22"/></svg>
+                            </div>
+                            <div>
+                                <h3 class="cc-card__title">GitHub Credentials</h3>
+                                <p class="cc-card__subtitle">Check Multi-Factor Authentication (MFA) status</p>
+                            </div>
+                        </div>
+                        <div class="cc-form">
+                            <div class="cc-form__group">
+                                <label class="cc-form__label" for="github-token">Personal Access Token</label>
+                                <div class="cc-form__input-wrap">
+                                    <svg class="cc-form__input-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M21 2l-2 2m-7.61 7.61a5.5 5.5 0 11-7.778 7.778 5.5 5.5 0 017.777-7.777zm0 0L15.5 7.5m0 0l3 3L22 7l-3-3m-3.5 3.5L19 4"/></svg>
+                                    <input class="cc-form__input" type="password" id="github-token" placeholder="ghp_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx" autocomplete="off">
+                                </div>
+                            </div>
+                            <div class="cc-form__info">
+                                <div class="cc-form__info-icon">
+                                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/><path d="M9 12l2 2 4-4"/></svg>
+                                </div>
+                                <div>
+                                    <strong>Multi-Factor Authentication (MFA)</strong>
+                                    <span>Verifies if 2FA is enabled for the authenticated user and checks organization MFA requirements.</span>
+                                </div>
+                            </div>
+                            <button class="btn btn-primary btn-glow cc-form__submit" id="btn-run-github" disabled>
+                                <span class="btn-icon">
+                                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="18" height="18"><circle cx="11" cy="11" r="4"/><path d="M21 21l-4.35-4.35"/><path d="M11 8v6M8 11h6"/></svg>
+                                </span>
+                                Run Analysis
+                            </button>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Datadog Panel -->
+                <div class="cc-panel" id="panel-datadog" style="display: none;">
+
+                    <!-- Step 1: Credentials -->
+                    <div id="dd-step-credentials">
+                        <div class="cc-card">
+                            <div class="cc-card__header">
+                                <div class="cc-card__header-icon cc-card__header-icon--datadog">
+                                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M12 2L2 7l10 5 10-5-10-5z"/><path d="M2 17l10 5 10-5"/><path d="M2 12l10 5 10-5"/></svg>
+                                </div>
+                                <div>
+                                    <h3 class="cc-card__title">Datadog Credentials</h3>
+                                    <p class="cc-card__subtitle">Step 1 of 3 — Enter your Datadog account credentials</p>
+                                </div>
+                            </div>
+                            <div class="cc-form">
+                                <div class="cc-form__group">
+                                    <label class="cc-form__label" for="dd-email">Email Address</label>
+                                    <div class="cc-form__input-wrap">
+                                        <svg class="cc-form__input-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M4 4h16c1.1 0 2 .9 2 2v12c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2V6c0-1.1.9-2 2-2z"/><path d="M22 6l-10 7L2 6"/></svg>
+                                        <input class="cc-form__input" type="email" id="dd-email" placeholder="you@example.com" autocomplete="off" spellcheck="false">
+                                    </div>
+                                </div>
+                                <div class="cc-form__group">
+                                    <label class="cc-form__label" for="dd-password">Password</label>
+                                    <div class="cc-form__input-wrap">
+                                        <svg class="cc-form__input-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0110 0v4"/></svg>
+                                        <input class="cc-form__input" type="password" id="dd-password" placeholder="Datadog account password" autocomplete="off">
+                                    </div>
+                                </div>
+                                <div class="cc-form__group">
+                                    <label class="cc-form__label" for="dd-site">Datadog Site</label>
+                                    <div class="cc-form__input-wrap">
+                                        <svg class="cc-form__input-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="12" cy="12" r="10"/><path d="M2 12h20M12 2a15.3 15.3 0 014 10 15.3 15.3 0 01-4 10 15.3 15.3 0 01-4-10 15.3 15.3 0 014-10z"/></svg>
+                                        <select class="cc-form__select" id="dd-site">
+                                            <option value="datadoghq.com">US1 — datadoghq.com</option>
+                                            <option value="us3.datadoghq.com">US3 — us3.datadoghq.com</option>
+                                            <option value="us5.datadoghq.com">US5 — us5.datadoghq.com</option>
+                                            <option value="datadoghq.eu">EU1 — datadoghq.eu</option>
+                                            <option value="ap1.datadoghq.com">AP1 — ap1.datadoghq.com</option>
+                                        </select>
+                                    </div>
+                                </div>
+                                <button class="btn btn-primary btn-glow cc-form__submit" id="btn-dd-next" disabled>
+                                    <span class="btn-icon">
+                                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="18" height="18"><path d="M5 12h14M12 5l7 7-7 7"/></svg>
+                                    </span>
+                                    Select Service
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Step 2: Service Selection -->
+                    <div id="dd-step-service" style="display:none;">
+                        <div class="cc-card">
+                            <div class="cc-card__header" style="margin-bottom:0;">
+                                <div class="cc-card__header-icon cc-card__header-icon--datadog">
+                                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg>
+                                </div>
+                                <div style="flex:1;">
+                                    <h3 class="cc-card__title">Select Service Area</h3>
+                                    <p class="cc-card__subtitle">Step 2 of 3 — Choose a Datadog service to analyze</p>
+                                </div>
+                                <button class="btn btn-ghost" id="btn-dd-back" style="padding:8px 14px;font-size:0.8rem;">← Back</button>
+                            </div>
+                            <div id="dd-service-grid" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(160px,1fr));gap:12px;margin-top:20px;"></div>
+                        </div>
+                    </div>
+
+                    <!-- Step 3: Check Selection -->
+                    <div id="dd-step-checks" style="display:none;">
+                        <div class="cc-card">
+                            <div class="cc-card__header" style="margin-bottom:0;">
+                                <div class="cc-card__header-icon cc-card__header-icon--datadog">
+                                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M9 12l2 2 4-4"/><rect x="3" y="3" width="18" height="18" rx="2"/></svg>
+                                </div>
+                                <div style="flex:1;">
+                                    <h3 class="cc-card__title">Select Compliance Check</h3>
+                                    <p class="cc-card__subtitle">Step 3 of 3 — Choose a specific check to run</p>
+                                </div>
+                                <button class="btn btn-ghost" id="btn-dd-back-checks" style="padding:8px 14px;font-size:0.8rem;">← Back</button>
+                            </div>
+                            <div id="dd-check-grid" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:12px;margin-top:20px;"></div>
+                            <button class="btn btn-primary btn-glow cc-form__submit" id="btn-run-datadog" disabled style="margin-top:20px;">
+                                <span class="btn-icon">
+                                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="18" height="18"><circle cx="11" cy="11" r="4"/><path d="M21 21l-4.35-4.35"/><path d="M11 8v6M8 11h6"/></svg>
+                                </span>
+                                Run Analysis
+                            </button>
+                        </div>
+                    </div>
+
+                </div>
+
+            </div><!-- /cc-credentials-wrap -->
+
+            <!-- Compliance Processing -->
+            <div class="cc-processing" id="compliance-processing" style="display: none;">
+                <div class="cc-processing__inner">
+                    <div class="cc-processing__orb"></div>
+                    <h2 class="cc-processing__title">Running Compliance Check</h2>
+                    <p class="cc-processing__subtitle" id="compliance-provider-name">AWS EBS Encryption</p>
+                    <div class="cc-processing__steps">
+                        <div class="cc-step" id="step-auth" data-status="waiting">
+                            <div class="cc-step__dot"></div>
+                            <span class="cc-step__label">Authenticating</span>
+                        </div>
+                        <div class="cc-step" id="step-api" data-status="waiting">
+                            <div class="cc-step__dot"></div>
+                            <span class="cc-step__label">Querying API</span>
+                        </div>
+                        <div class="cc-step" id="step-screenshot" data-status="waiting">
+                            <div class="cc-step__dot"></div>
+                            <span class="cc-step__label">Capturing Screenshots</span>
+                        </div>
+                        <div class="cc-step" id="step-analysis" data-status="waiting">
+                            <div class="cc-step__dot"></div>
+                            <span class="cc-step__label">AI Analysis</span>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Compliance Results -->
+            <div class="cc-results" id="compliance-results" style="display: none;">
+                <div class="cc-results__header">
+                    <h2 class="results-title" id="compliance-results-title">Compliance Report</h2>
+                    <button class="btn btn-ghost" id="btn-new-compliance">
+                        <span>+</span> New Check
+                    </button>
+                </div>
+
+                <div class="cc-status-banner" id="compliance-status-banner">
+                    <div class="cc-status-banner__icon" id="compliance-status-icon">?</div>
+                    <div class="cc-status-banner__details">
+                        <h3 id="compliance-status-text">Checking...</h3>
+                        <p id="compliance-status-desc">Analysis in progress</p>
+                    </div>
+                </div>
+
+                <div class="result-card full-width" id="screenshots-card" style="display: none;">
+                    <h3 class="card-title">Captured Screenshots</h3>
+                    <div class="cc-screenshots" id="screenshots-gallery"></div>
+                </div>
+
+                <div class="result-card full-width">
+                    <h3 class="card-title">API Findings</h3>
+                    <div class="cc-findings" id="api-findings-content">
+                        <p class="empty-state">No findings yet.</p>
+                    </div>
+                </div>
+
+                <div class="result-card full-width" id="vision-card" style="display: none;">
+                    <h3 class="card-title">AI Vision Analysis</h3>
+                    <div class="cc-vision" id="vision-analysis-content"></div>
+                </div>
+            </div>
+        </section>
+
+        <!-- SECTION: Results Dashboard -->
+        <section class="section" id="section-results">
+            <div class="results-header">
+                <h2 class="results-title">Analysis Report</h2>
+                <button class="btn btn-ghost" id="btn-new-analysis">
+                    <span>+</span> New Analysis
+                </button>
+            </div>
+
+            <div class="results-grid">
+                <!-- Score Card -->
+                <div class="result-card score-card">
+                    <h3 class="card-title">Authenticity Score</h3>
+                    <div class="score-gauge">
+                        <svg class="gauge-svg" viewBox="0 0 200 200">
+                            <circle class="gauge-bg" cx="100" cy="100" r="85" />
+                            <circle class="gauge-fill" id="gauge-circle" cx="100" cy="100" r="85" />
+                        </svg>
+                        <div class="score-value" id="score-value">--</div>
+                        <div class="score-label">out of 100</div>
+                    </div>
+                    <div class="risk-badge" id="risk-badge">
+                        <span class="risk-dot"></span>
+                        <span class="risk-text" id="risk-text">--</span>
+                    </div>
+                </div>
+
+                <!-- Executive Summary -->
+                <div class="result-card summary-card">
+                    <h3 class="card-title">Executive Summary</h3>
+                    <p class="summary-text" id="summary-text">
+                        Analysis results will appear here...
+                    </p>
+                    <div class="file-details">
+                        <div class="detail-row">
+                            <span class="detail-label">File</span>
+                            <span class="detail-value" id="result-filename">--</span>
+                        </div>
+                        <div class="detail-row">
+                            <span class="detail-label">SHA-256</span>
+                            <code class="detail-hash" id="result-sha256">--</code>
+                        </div>
+                        <div class="detail-row">
+                            <span class="detail-label">Analyzed</span>
+                            <span class="detail-value" id="result-timestamp">--</span>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Integrity Indicators -->
+                <div class="result-card indicators-card">
+                    <h3 class="card-title">Integrity Indicators</h3>
+                    <div class="indicators-split">
+                        <div class="indicator-group positive">
+                            <h4><span class="indicator-icon">✓</span> Authentic Signals</h4>
+                            <ul id="positive-indicators" class="indicator-list">
+                                <li>--</li>
+                            </ul>
+                        </div>
+                        <div class="indicator-group negative">
+                            <h4><span class="indicator-icon">⚠</span> Suspicious Signals</h4>
+                            <ul id="negative-indicators" class="indicator-list">
+                                <li>--</li>
+                            </ul>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Detailed Findings -->
+                <div class="result-card findings-card full-width">
+                    <h3 class="card-title">Detailed Findings</h3>
+                    <div class="findings-list" id="findings-list">
+                        <p class="empty-state">No findings to display yet.</p>
+                    </div>
+                </div>
+
+                <!-- Recommendations -->
+                <div class="result-card recommendations-card full-width">
+                    <h3 class="card-title">Recommendations</h3>
+                    <ul class="recommendations-list" id="recommendations-list">
+                        <li>--</li>
+                    </ul>
+                </div>
+            </div>
+        </section>
+
+        <!-- SECTION: History -->
+        <section class="section" id="section-history">
+            <div class="history-header">
+                <h2 class="results-title">Analysis History</h2>
+                <button class="btn btn-ghost" id="btn-refresh-history">
+                    <span>↻</span> Refresh
+                </button>
+            </div>
+            <div class="history-table-container">
+                <table class="history-table">
+                    <thead>
+                        <tr>
+                            <th>File</th>
+                            <th>Type</th>
+                            <th>Score</th>
+                            <th>Risk</th>
+                            <th>Status</th>
+                            <th>Date</th>
+                            <th>Actions</th>
+                        </tr>
+                    </thead>
+                    <tbody id="history-body">
+                        <tr class="empty-row">
+                            <td colspan="7">No analyses yet. Upload evidence to get started.</td>
+                        </tr>
+                    </tbody>
+                </table>
+            </div>
+        </section>
+    </main>
+
+    <!-- Screenshot Lightbox -->
+    <div class="lightbox-overlay" id="lightbox-overlay" style="display:none;">
+        <button class="lightbox-close" id="lightbox-close" aria-label="Close">&#x2715;</button>
+        <div class="lightbox-content">
+            <button class="lightbox-nav lightbox-nav--prev" id="lightbox-prev" aria-label="Previous">&#8249;</button>
+            <img class="lightbox-img" id="lightbox-img" src="" alt="">
+            <button class="lightbox-nav lightbox-nav--next" id="lightbox-next" aria-label="Next">&#8250;</button>
+        </div>
+        <div class="lightbox-caption" id="lightbox-caption"></div>
+        <div class="lightbox-counter" id="lightbox-counter"></div>
+    </div>
+
+    <!-- Toast Notification -->
+    <div class="toast-container" id="toast-container"></div>
+
+    <script src="js/animations.js"></script>
+    <script src="js/upload.js"></script>
+    <script src="js/dashboard.js"></script>
+    <script src="js/compliance.js?v=3"></script>
+    <script src="js/app.js"></script>
+</body>
+</html>

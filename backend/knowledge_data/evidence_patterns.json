@@ -1,0 +1,177 @@
+[
+    {
+        "category": "Screenshot Manipulation",
+        "title": "Pixel-level editing in screenshots",
+        "description": "Screenshots that have been edited using image manipulation tools like Photoshop or GIMP to alter text, numbers, or UI elements. Common in fabricating chat messages, financial records, or system outputs.",
+        "indicators": "Inconsistent font rendering, color mismatches near edited areas, sharp edges around pasted elements, misaligned UI components, irregular pixel patterns at edit boundaries",
+        "risk_level": "High"
+    },
+    {
+        "category": "Screenshot Manipulation",
+        "title": "Browser DevTools content modification",
+        "description": "Using browser developer tools to modify displayed content before taking a screenshot. Changes are made to the DOM without altering the actual data, producing screenshots that show false information.",
+        "indicators": "Perfect font consistency (since fonts are real), no pixel artifacts, but content may be inconsistent with expected system behavior or formatting patterns",
+        "risk_level": "High"
+    },
+    {
+        "category": "Screenshot Manipulation",
+        "title": "Screenshot timestamp manipulation",
+        "description": "Altering system clock before taking a screenshot to fake the timestamp, or editing the timestamp area of a screenshot to show a different time.",
+        "indicators": "Timezone inconsistencies, timestamp format mismatches with the alleged OS or browser, daylight saving time errors, metadata timestamp vs. displayed timestamp mismatch",
+        "risk_level": "Medium"
+    },
+    {
+        "category": "Screenshot Manipulation",
+        "title": "Composite screenshot creation",
+        "description": "Combining multiple screenshots or adding elements from different sources to create a single fabricated image that never existed as a genuine screen capture.",
+        "indicators": "Resolution differences between regions, DPI inconsistencies, different anti-aliasing patterns, lighting/brightness variations across the image, inconsistent window chrome elements",
+        "risk_level": "High"
+    },
+    {
+        "category": "Screenshot Manipulation",
+        "title": "EXIF metadata stripping",
+        "description": "Removing EXIF metadata from image files to hide information about the original capture device, software used, or timestamps. Common when trying to disguise the origin of an image.",
+        "indicators": "Complete absence of EXIF data in formats that typically contain it (JPEG, TIFF), file size inconsistent with expected metadata overhead, no camera/device information",
+        "risk_level": "Medium"
+    },
+    {
+        "category": "Log Tampering",
+        "title": "Log entry deletion",
+        "description": "Selectively removing log entries to hide specific events or activities. The remaining log shows gaps in sequence numbers, timestamps, or connection patterns.",
+        "indicators": "Gaps in sequential line numbers, timestamp jumps, missing entries in otherwise continuous sequences, file size reduction, irregular line spacing patterns",
+        "risk_level": "High"
+    },
+    {
+        "category": "Log Tampering",
+        "title": "Log entry modification",
+        "description": "Altering existing log entries to change usernames, IP addresses, timestamps, or status codes. The modified entries may have subtly different formatting from authentic entries.",
+        "indicators": "Inconsistent field formatting, unusual character encoding, modified timestamp patterns, field length anomalies, whitespace irregularities",
+        "risk_level": "High"
+    },
+    {
+        "category": "Log Tampering",
+        "title": "Synthetic log generation",
+        "description": "Creating entirely fake log files using scripts or templates. These logs may appear too perfect, lacking the natural variation seen in genuine system output.",
+        "indicators": "Too-regular timestamp intervals, repetitive patterns, missing natural jitter in response times, perfectly sequential request IDs, identical error message strings",
+        "risk_level": "Critical"
+    },
+    {
+        "category": "Log Tampering",
+        "title": "Log file backdating",
+        "description": "Modifying file system timestamps to make log files appear older or newer than they actually are. Often done by changing system clock before file creation or using file attribute modification tools.",
+        "indicators": "File creation timestamp after modification timestamp, metadata timestamps inconsistent with file content timestamps, filesystem journal inconsistencies",
+        "risk_level": "Medium"
+    },
+    {
+        "category": "Log Tampering",
+        "title": "Log injection attacks",
+        "description": "Injecting false log entries into a legitimate log file to fabricate evidence of events that never occurred. The injected content may have slightly different formatting.",
+        "indicators": "Encoding differences between injected and original entries, irregular log level patterns, entries that break established logging format conventions, unusual source identifiers",
+        "risk_level": "High"
+    },
+    {
+        "category": "Metadata Falsification",
+        "title": "EXIF data fabrication",
+        "description": "Creating fake EXIF metadata for images, including false GPS coordinates, camera model information, or timestamps. Tools like ExifTool can be used to add or modify any EXIF field.",
+        "indicators": "Unrealistic GPS coordinates for claimed location, camera model inconsistent with image quality, EXIF version inconsistencies, impossible lens/sensor combinations",
+        "risk_level": "High"
+    },
+    {
+        "category": "Metadata Falsification",
+        "title": "Document property manipulation",
+        "description": "Changing document properties like author, creation date, modification date, or revision history in Office documents or PDFs to misrepresent document origin or timeline.",
+        "indicators": "Author field inconsistent with document style, revision number too low for document complexity, timezone mismatches in embedded timestamps, font availability date vs. creation date",
+        "risk_level": "Medium"
+    },
+    {
+        "category": "Metadata Falsification",
+        "title": "File hash collision attempt",
+        "description": "Attempting to create a modified file that produces the same hash as the original, making the tampered version appear authentic in hash-based verification systems.",
+        "indicators": "File content inconsistencies despite matching hash, unusual file structure or padding, appended data blocks, abnormal file size for content type",
+        "risk_level": "Critical"
+    },
+    {
+        "category": "Forensic Red Flags",
+        "title": "Multiple re-saves and compression artifacts",
+        "description": "Images that have been saved multiple times, especially in lossy formats like JPEG, accumulate compression artifacts. Excessive artifacts in specific regions may indicate selective editing.",
+        "indicators": "High Error Level Analysis (ELA) differences between regions, visible JPEG blocking artifacts at different levels, ghost images from previous edits, quality inconsistencies",
+        "risk_level": "Medium"
+    },
+    {
+        "category": "Forensic Red Flags",
+        "title": "Screenshot from virtual machine or emulator",
+        "description": "Screenshots taken from virtual machines or device emulators that simulate real environments. These can be used to fabricate evidence of system states that never existed on real hardware.",
+        "indicators": "VM-specific UI elements (menu bar items, taskbar indicators), virtualization driver names in system info, unusual screen resolutions, MAC address patterns typical of VMs",
+        "risk_level": "Medium"
+    },
+    {
+        "category": "Forensic Red Flags",
+        "title": "AI-generated content insertion",
+        "description": "Using AI tools (like ChatGPT, Midjourney) to generate realistic-looking text, images, or data that is then inserted into evidence. The AI-generated content may have subtle artifacts.",
+        "indicators": "Unnaturally perfect grammar in supposedly user-generated content, AI watermarks, statistical anomalies in text patterns, too-smooth gradients in generated images",
+        "risk_level": "High"
+    },
+    {
+        "category": "Forensic Red Flags",
+        "title": "Selective cropping to hide context",
+        "description": "Cropping screenshots or images to remove surrounding context that would reveal the evidence is misleading or shows only part of the full picture.",
+        "indicators": "Awkward crop boundaries, missing standard UI elements (status bar, scrollbar), truncated text, URL bar absent from browser screenshots, uneven margins",
+        "risk_level": "Medium"
+    },
+    {
+        "category": "Forensic Red Flags",
+        "title": "File format conversion to remove evidence",
+        "description": "Converting files between formats (e.g., TIFF to JPEG, PNG to WebP) to strip metadata, remove editing history, or eliminate format-specific forensic markers.",
+        "indicators": "Format-specific metadata missing that should be present, unusual format choice for the type of content, loss of expected color depth, compression artifacts inconsistent with claimed source",
+        "risk_level": "Medium"
+    },
+    {
+        "category": "Digital Evidence Best Practices",
+        "title": "Chain of custody verification",
+        "description": "Proper digital evidence handling requires maintaining a documented chain of custody showing who handled the evidence, when, and what actions were performed.",
+        "indicators": "Verified chain of custody documentation, consistent hash values across custody transfers, write-protected storage media, timestamped access logs",
+        "risk_level": "Low"
+    },
+    {
+        "category": "Digital Evidence Best Practices",
+        "title": "Hash-based integrity verification",
+        "description": "Computing and storing cryptographic hashes (SHA-256, SHA-512) at the time of evidence collection to later verify that the evidence has not been modified.",
+        "indicators": "Matching SHA-256 hashes between collection and analysis, documented hash values in evidence reports, multiple hash algorithm verification",
+        "risk_level": "Low"
+    },
+    {
+        "category": "Digital Evidence Best Practices",
+        "title": "Original file preservation",
+        "description": "Best practice requires preserving the original evidence file in its unmodified state, performing all analysis on forensic copies rather than the original.",
+        "indicators": "Bit-for-bit forensic copies used for analysis, read-only access to originals, documented copy procedures, verified copy integrity via hashing",
+        "risk_level": "Low"
+    },
+    {
+        "category": "Screenshot Manipulation",
+        "title": "Mobile screenshot fabrication",
+        "description": "Creating fake mobile screenshots using mock-up tools or editing apps. These often involve fabricating chat conversations, notification screens, or app interfaces.",
+        "indicators": "Wrong status bar format for claimed OS version, incorrect carrier/WiFi icon rendering, font inconsistencies with actual mobile OS, notification badge count anomalies",
+        "risk_level": "High"
+    },
+    {
+        "category": "Log Tampering",
+        "title": "Selective log export manipulation",
+        "description": "Exporting logs from a system but selectively filtering or modifying entries during the export process. The exported log appears genuine but is incomplete.",
+        "indicators": "Missing common log entries (startup, shutdown), gaps in otherwise continuous monitoring, missing correlated entries (request without response), unusual export format",
+        "risk_level": "High"
+    },
+    {
+        "category": "Metadata Falsification",
+        "title": "GPS coordinate spoofing in images",
+        "description": "Adding false GPS coordinates to image metadata to claim the photo was taken at a location where the photographer was never present.",
+        "indicators": "GPS precision too high or consistent (exact coordinates), inconsistent altitude data, timezone metadata conflicts with GPS location, lighting/shadows inconsistent with claimed location",
+        "risk_level": "High"
+    },
+    {
+        "category": "Forensic Red Flags",
+        "title": "Inconsistent rendering engine artifacts",
+        "description": "Screenshots showing content rendered by a different browser or application than claimed. Each rendering engine leaves distinct patterns in font rendering, spacing, and element display.",
+        "indicators": "Font smoothing inconsistent with claimed browser, subpixel rendering differences, CSS rendering anomalies, scrollbar style mismatches with OS",
+        "risk_level": "Medium"
+    }
+]

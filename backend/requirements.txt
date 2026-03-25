@@ -1,0 +1,33 @@
+flask==3.1.0
+flask-cors==5.0.1
+gunicorn==23.0.0
+
+# LangChain & LangGraph
+langchain==0.3.14
+langchain-aws==0.2.12
+langchain-community==0.3.14
+langgraph==0.2.65
+langsmith==0.2.10
+
+# AWS
+boto3==1.36.4
+botocore==1.36.4
+
+# Database
+sqlalchemy==2.0.36
+psycopg2-binary==2.9.10
+pgvector==0.3.6
+alembic==1.14.1
+
+# Image processing
+Pillow==11.1.0
+
+# Browser automation
+playwright==1.49.1
+requests>=2.31.0
+
+# Utilities
+python-dotenv==1.0.1
+python-magic==0.4.27
+uuid6==2024.7.10
+playwright-stealth>=1.0.6
