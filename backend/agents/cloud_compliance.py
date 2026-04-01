@@ -8,7 +8,7 @@ import time
 import uuid
 import requests
 import urllib.parse
-from datetime import datetime
+from datetime import datetime, timedelta
 
 logger = logging.getLogger(__name__)
 
@@ -760,83 +760,76 @@ def _take_aws_service_screenshots(account_id, iam_username, iam_password, region
         _apply_stealth(page)
 
         # ── Step 1: IAM console login ──────────────────────────────────────
+        # The account-specific URL redirects through OAuth. The React SPA
+        # login form takes ~45-50 seconds to render in headless Docker Chromium.
         signin_url = f"https://{account_id}.signin.aws.amazon.com/console"
         try:
             page.goto(signin_url, wait_until="commit", timeout=60000)
-            page.wait_for_timeout(3000)  # let sign-in page JS render
         except PlaywrightTimeout:
             logger.error("Timed out loading AWS sign-in page")
             browser.close()
             return screenshots
 
-        # Fill Account ID radio / field
+        # Wait for the React SPA login form to render (can take 45-60s in Docker)
         try:
-            iam_radio = page.locator('input[type="radio"][value="iam"]')
-            if iam_radio.count() > 0:
-                iam_radio.first.click()
-                page.wait_for_timeout(500)
-        except Exception:
-            pass
-
-        for selector in ['#account', '#resolving_input', 'input[name="account"]', 'input[type="text"]']:
+            page.wait_for_selector(
+                'input#username, input#password',
+                state="visible", timeout=90000
+            )
+            logger.info("AWS sign-in form rendered")
+            page.wait_for_timeout(1000)  # small settle time
+        except PlaywrightTimeout:
+            logger.error("AWS sign-in form never rendered after 90s")
             try:
-                el = page.locator(selector)
-                if el.count() > 0:
-                    el.first.click()
-                    page.wait_for_timeout(200)
-                    el.first.type(account_id, delay=60)
-                    break
+                raw = page.screenshot(full_page=False)
+                file_id, filepath, filename = _save_screenshot(raw, "aws", "debug_form_not_rendered")
+                screenshots.append({
+                    "file_id": file_id,
+                    "path": filepath,
+                    "filename": filename,
+                    "label": "debug_form_not_rendered",
+                    "description": "Sign-in form did not render",
+                    "url": page.url,
+                })
             except Exception:
-                continue
+                pass
+            browser.close()
+            return screenshots
 
-        # Submit account step
-        for selector in ['#next_button', 'button[type="submit"]', 'input[type="submit"]']:
-            try:
-                el = page.locator(selector)
-                if el.count() > 0:
-                    el.first.click()
-                    page.wait_for_timeout(1000)
-                    break
-            except Exception:
-                continue
-
-        # Fill username
-        for selector in ['#username', 'input[name="username"]', 'input[type="text"]']:
-            try:
-                el = page.locator(selector)
-                if el.count() > 0:
-                    el.first.click()
-                    page.wait_for_timeout(200)
-                    el.first.type(iam_username, delay=60)
-                    break
-            except Exception:
-                continue
+        # Fill username (account ID is pre-filled from the URL)
+        try:
+            page.locator('#username').fill(iam_username)
+            logger.info("Filled username")
+        except Exception as e:
+            logger.error(f"Could not fill username: {e}")
 
         # Fill password
-        for selector in ['#password', 'input[name="password"]', 'input[type="password"]']:
-            try:
-                el = page.locator(selector)
-                if el.count() > 0:
-                    el.first.click()
-                    page.wait_for_timeout(200)
-                    el.first.type(iam_password, delay=60)
-                    break
-            except Exception:
-                continue
+        try:
+            page.locator('#password').fill(iam_password)
+            logger.info("Filled password")
+        except Exception as e:
+            logger.error(f"Could not fill password: {e}")
 
         # Submit login
-        for selector in ['#signin_button', 'button[type="submit"]', 'input[type="submit"]']:
-            try:
-                el = page.locator(selector)
-                if el.count() > 0:
-                    el.first.click()
-                    break
-            except Exception:
-                continue
+        try:
+            page.locator('#signin_button').click()
+            logger.info("Clicked sign-in button")
+        except Exception:
+            # Fallback to generic submit
+            for selector in ['button[type="submit"]', 'input[type="submit"]']:
+                try:
+                    el = page.locator(selector)
+                    if el.count() > 0:
+                        el.first.click()
+                        logger.info(f"Clicked submit via fallback: {selector}")
+                        break
+                except Exception:
+                    continue
 
         # Wait for redirect to console
         try:
-            page.wait_for_url("**/console.aws.amazon.com/**", timeout=25000)
+            page.wait_for_url("**/console.aws.amazon.com/**", timeout=45000)
+            logger.info("Login successful — redirected to console")
         except PlaywrightTimeout:
             try:
                 raw = page.screenshot(full_page=False)
@@ -849,6 +842,7 @@ def _take_aws_service_screenshots(account_id, iam_username, iam_password, region
                     "description": "Login failure — this is what the browser showed when login timed out",
                     "url": page.url,
                 })
+                logger.error(f"Login failed — browser URL: {page.url}")
             except Exception:
                 pass
             logger.error("AWS service scan: login timed out")
@@ -1899,247 +1893,818 @@ body { font-family: 'Segoe UI', -apple-system, BlinkMacSystemFont, sans-serif; b
     return screenshots
 
 
-# ═══════════════════════════════════════════════════════
-# GitHub MFA Verification
-# ═══════════════════════════════════════════════════════
+# Azure service registry for env-backed navigation
+AZURE_SERVICE_PAGES = {
+    "subscriptions": {"name": "Subscriptions", "description": "Tenant subscriptions and access scope"},
+    "sql": {"name": "SQL Databases", "description": "SQL servers, databases, and TDE posture"},
+    "storage": {"name": "Storage Accounts", "description": "Storage account encryption and replication settings"},
+    "key_vault": {"name": "Key Vault", "description": "Vault inventory, purge protection, and soft delete"},
+    "activity_logs": {"name": "Activity Logs", "description": "Management activity and security-relevant events"},
+}
 
-def check_github_mfa(api_token):
-    """Check GitHub MFA (Two-Factor Authentication) status."""
-    results = {
-        "provider": "github",
-        "check": "Multi-Factor Authentication (MFA)",
+
+def _azure_get_token(tenant_id, client_id, client_secret, access_token=None):
+    if access_token:
+        return access_token
+
+    token_url = f"https://login.microsoftonline.com/{tenant_id}/oauth2/v2.0/token"
+    token_data = {
+        "client_id": client_id,
+        "client_secret": client_secret,
+        "scope": "https://management.azure.com/.default",
+        "grant_type": "client_credentials",
+    }
+    token_response = requests.post(token_url, data=token_data, timeout=15)
+    token_response.raise_for_status()
+    return token_response.json().get("access_token")
+
+
+def _azure_headers(token):
+    return {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
+
+
+def _azure_list_subscriptions(headers):
+    subs_url = "https://management.azure.com/subscriptions?api-version=2022-12-01"
+    subs_response = requests.get(subs_url, headers=headers, timeout=15)
+    subs_response.raise_for_status()
+    return subs_response.json().get("value", [])
+
+
+def _azure_rg_from_id(resource_id):
+    if "/resourceGroups/" not in resource_id:
+        return ""
+    return resource_id.split("/resourceGroups/")[1].split("/")[0]
+
+
+def check_azure_service(tenant_id, client_id, client_secret, service, access_token=None):
+    """Run a focused Azure service inventory suitable for provider-side navigation."""
+    if service == "sql":
+        result = check_azure_sql_encryption(tenant_id, client_id, client_secret, access_token=access_token)
+        result["service"] = "sql"
+        result["service_name"] = AZURE_SERVICE_PAGES["sql"]["name"]
+        result["service_description"] = AZURE_SERVICE_PAGES["sql"]["description"]
+        return result
+
+    result = {
+        "provider": "azure",
+        "service": service,
+        "service_name": AZURE_SERVICE_PAGES.get(service, {}).get("name", service),
+        "service_description": AZURE_SERVICE_PAGES.get(service, {}).get("description", ""),
         "timestamp": datetime.utcnow().isoformat(),
         "screenshots": [],
         "api_findings": {},
         "vision_analysis": {},
         "status": "completed",
-        "mfa_enabled": None,
     }
 
-    headers = {
+    try:
+        token = _azure_get_token(tenant_id, client_id, client_secret, access_token=access_token)
+        headers = _azure_headers(token)
+        subscriptions = _azure_list_subscriptions(headers)
+        result["api_findings"]["authentication"] = "success"
+        result["api_findings"]["subscriptions"] = [
+            {"id": sub["subscriptionId"], "name": sub.get("displayName")}
+            for sub in subscriptions
+        ]
+    except Exception as exc:
+        result["status"] = "error"
+        result["api_findings"]["authentication"] = f"failed: {exc}"
+        return result
+
+    try:
+        if service == "subscriptions":
+            result["api_findings"]["inventory"] = result["api_findings"]["subscriptions"]
+        elif service == "storage":
+            accounts = []
+            for sub in subscriptions:
+                resp = requests.get(
+                    f"https://management.azure.com/subscriptions/{sub['subscriptionId']}/providers/Microsoft.Storage/storageAccounts?api-version=2023-01-01",
+                    headers=headers,
+                    timeout=20,
+                )
+                if resp.status_code != 200:
+                    continue
+                for item in resp.json().get("value", []):
+                    props = item.get("properties", {})
+                    encryption = props.get("encryption", {})
+                    accounts.append({
+                        "name": item.get("name"),
+                        "resource_group": _azure_rg_from_id(item.get("id", "")),
+                        "location": item.get("location"),
+                        "kind": item.get("kind"),
+                        "sku": (item.get("sku") or {}).get("name"),
+                        "blob_encryption": ((encryption.get("services") or {}).get("blob") or {}).get("enabled"),
+                        "file_encryption": ((encryption.get("services") or {}).get("file") or {}).get("enabled"),
+                        "key_source": encryption.get("keySource"),
+                    })
+            result["api_findings"]["storage_accounts"] = accounts
+        elif service == "key_vault":
+            vaults = []
+            for sub in subscriptions:
+                resp = requests.get(
+                    f"https://management.azure.com/subscriptions/{sub['subscriptionId']}/providers/Microsoft.KeyVault/vaults?api-version=2023-07-01",
+                    headers=headers,
+                    timeout=20,
+                )
+                if resp.status_code != 200:
+                    continue
+                for item in resp.json().get("value", []):
+                    props = item.get("properties", {})
+                    vaults.append({
+                        "name": item.get("name"),
+                        "resource_group": _azure_rg_from_id(item.get("id", "")),
+                        "location": item.get("location"),
+                        "sku": (props.get("sku") or {}).get("name"),
+                        "soft_delete_retention_in_days": props.get("softDeleteRetentionInDays"),
+                        "enable_purge_protection": props.get("enablePurgeProtection"),
+                        "enable_rbac_authorization": props.get("enableRbacAuthorization"),
+                        "vault_uri": props.get("vaultUri"),
+                    })
+            result["api_findings"]["vaults"] = vaults
+        elif service == "activity_logs":
+            events = []
+            for sub in subscriptions:
+                filter_str = "eventTimestamp ge '2024-01-01'"
+                resp = requests.get(
+                    f"https://management.azure.com/subscriptions/{sub['subscriptionId']}/providers/Microsoft.Insights/eventtypes/management/values?api-version=2015-04-01&$filter={urllib.parse.quote(filter_str)}",
+                    headers=headers,
+                    timeout=20,
+                )
+                if resp.status_code != 200:
+                    continue
+                for event in resp.json().get("value", [])[:30]:
+                    events.append({
+                        "subscription_id": sub["subscriptionId"],
+                        "operation": (event.get("operationName") or {}).get("value"),
+                        "status": (event.get("status") or {}).get("value"),
+                        "resource_group": event.get("resourceGroupName"),
+                        "timestamp": event.get("eventTimestamp"),
+                        "caller": event.get("caller"),
+                    })
+            result["api_findings"]["activity_logs"] = events
+    except Exception as exc:
+        result["status"] = "error"
+        result["api_findings"]["service_error"] = str(exc)
+
+    return result
+
+
+# ═══════════════════════════════════════════════════════
+# GitHub Posture Verification
+# ═══════════════════════════════════════════════════════
+
+def _github_headers(api_token):
+    return {
         "Authorization": f"token {api_token}",
         "Accept": "application/vnd.github+json",
         "X-GitHub-Api-Version": "2022-11-28",
     }
 
-    # Step 1: Get authenticated user info
+
+def _github_paginated_get(url, headers, params=None, max_pages=3):
+    items = []
+    current_params = dict(params or {})
+    current_params.setdefault("per_page", 100)
+
+    for page_num in range(1, max_pages + 1):
+        current_params["page"] = page_num
+        response = requests.get(url, headers=headers, params=current_params, timeout=20)
+        response.raise_for_status()
+        data = response.json()
+        if not isinstance(data, list):
+            return data
+        items.extend(data)
+        if len(data) < current_params["per_page"]:
+            break
+
+    return items
+
+
+def _github_status_severity(status):
+    return {"pass": 0, "warn": 1, "unknown": 2, "fail": 3}.get(status, 2)
+
+
+def _github_pick_worst_status(statuses):
+    valid = [status for status in statuses if status]
+    if not valid:
+        return "unknown"
+    return max(valid, key=_github_status_severity)
+
+
+def _github_numeric_score(status):
+    return {"pass": 100, "warn": 62, "fail": 22, "unknown": 40}.get(status, 40)
+
+
+def _github_build_service(key, name, status, summary, metrics, highlights, metadata):
+    return {
+        "key": key,
+        "name": name,
+        "status": status,
+        "score": _github_numeric_score(status),
+        "summary": summary,
+        "metrics": metrics,
+        "highlights": highlights,
+        "metadata": metadata,
+    }
+
+
+def _github_fetch_repo_branches(headers, repo_full_name, limit=10):
     try:
-        user_response = requests.get("https://api.github.com/user", headers=headers, timeout=15)
+        response = requests.get(
+            f"https://api.github.com/repos/{repo_full_name}/branches",
+            headers=headers,
+            params={"per_page": limit},
+            timeout=20,
+        )
+        if response.status_code != 200:
+            return {"error": f"{response.status_code}: {response.text[:160]}", "branches": []}
+        data = response.json()
+        return {
+            "branches": [
+                {
+                    "name": branch.get("name"),
+                    "protected": branch.get("protected"),
+                    "commit_sha": (branch.get("commit") or {}).get("sha"),
+                }
+                for branch in data
+            ]
+        }
+    except Exception as exc:
+        return {"error": str(exc), "branches": []}
+
+
+def _github_analyze_repositories(headers, repos):
+    total_repos = len(repos)
+    active_repos = [repo for repo in repos if not repo.get("archived")]
+    private_repos = len([repo for repo in repos if repo.get("private")])
+    public_repos = total_repos - private_repos
+    archived_repos = total_repos - len(active_repos)
+    disabled_issues = len([repo for repo in active_repos if not repo.get("has_issues", True)])
+    disabled_projects = len([repo for repo in active_repos if not repo.get("has_projects", False)])
+    disabled_wiki = len([repo for repo in active_repos if not repo.get("has_wiki", False)])
+
+    if total_repos == 0:
+        status = "unknown"
+        summary = "No accessible repositories were returned by the token."
+    elif archived_repos == total_repos:
+        status = "warn"
+        summary = "All accessible repositories are archived; active repository posture could not be fully assessed."
+    else:
+        status = "pass"
+        summary = f"{len(active_repos)} active repositories were discovered across private and public scopes."
+
+    detailed_repositories = []
+    for repo in repos[:30]:
+        branch_data = _github_fetch_repo_branches(headers, repo.get("full_name"), limit=12)
+        detailed_repositories.append({
+            "full_name": repo.get("full_name"),
+            "name": repo.get("name"),
+            "visibility": repo.get("visibility"),
+            "private": repo.get("private"),
+            "archived": repo.get("archived"),
+            "default_branch": repo.get("default_branch"),
+            "open_issues_count": repo.get("open_issues_count"),
+            "forks_count": repo.get("forks_count"),
+            "stargazers_count": repo.get("stargazers_count"),
+            "watchers_count": repo.get("watchers_count"),
+            "language": repo.get("language"),
+            "has_issues": repo.get("has_issues"),
+            "has_projects": repo.get("has_projects"),
+            "has_wiki": repo.get("has_wiki"),
+            "updated_at": repo.get("updated_at"),
+            "pushed_at": repo.get("pushed_at"),
+            "html_url": repo.get("html_url"),
+            "branches": branch_data.get("branches", []),
+            "branches_error": branch_data.get("error"),
+        })
+
+    metadata = {
+        "total_repositories": total_repos,
+        "active_repositories": len(active_repos),
+        "private_repositories": private_repos,
+        "public_repositories": public_repos,
+        "archived_repositories": archived_repos,
+        "repositories": detailed_repositories,
+    }
+
+    return _github_build_service(
+        "repositories",
+        "Repositories",
+        status,
+        summary,
+        {
+            "total": total_repos,
+            "active": len(active_repos),
+            "private": private_repos,
+            "public": public_repos,
+        },
+        [
+            f"{archived_repos} archived repositories",
+            f"{disabled_issues} active repositories with issues disabled",
+            f"{disabled_projects} active repositories with projects disabled",
+            f"{disabled_wiki} active repositories with wiki disabled",
+        ],
+        metadata,
+    )
+
+
+def _github_analyze_pull_requests(headers, username):
+    query = f"is:pr involves:{username}"
+    open_resp = requests.get(
+        "https://api.github.com/search/issues",
+        headers=headers,
+        params={"q": f"{query} state:open", "per_page": 30},
+        timeout=20,
+    )
+    open_resp.raise_for_status()
+    open_data = open_resp.json()
+
+    merged_resp = requests.get(
+        "https://api.github.com/search/issues",
+        headers=headers,
+        params={"q": f"{query} is:merged", "per_page": 30},
+        timeout=20,
+    )
+    merged_resp.raise_for_status()
+    merged_data = merged_resp.json()
+
+    stale_cutoff = (datetime.utcnow() - timedelta(days=30)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    stale_open = [
+        item for item in open_data.get("items", [])
+        if item.get("updated_at", "") < stale_cutoff
+    ]
+    open_total = open_data.get("total_count", 0)
+
+    if open_total >= 15:
+        status = "warn"
+        summary = f"{open_total} open pull requests need attention across accessible repositories."
+    else:
+        status = "pass"
+        summary = f"{open_total} open pull requests and {merged_data.get('total_count', 0)} merged pull requests were found."
+
+    return _github_build_service(
+        "pull_requests",
+        "Pull Requests",
+        status,
+        summary,
+        {
+            "open": open_total,
+            "merged": merged_data.get("total_count", 0),
+            "sampled_stale": len(stale_open),
+            "sampled": len(open_data.get("items", [])),
+        },
+        [
+            f"{len(stale_open)} sampled pull requests have not moved recently",
+            f"Search scope: PRs involving {username}",
+        ],
+        {
+            "query_scope": f"PRs involving {username}",
+            "open_results": open_data,
+            "merged_results": merged_data,
+        },
+    )
+
+
+def _github_analyze_settings(user_data, org_details, repos):
+    mfa_enabled = user_data.get("two_factor_authentication")
+    orgs_with_required_2fa = len([org for org in org_details if org.get("two_factor_requirement_enabled")])
+    org_total = len(org_details)
+
+    security_enabled = 0
+    security_partial = 0
+    for repo in repos:
+        security = repo.get("security_and_analysis") or {}
+        statuses = [
+            (security.get("dependabot_security_updates") or {}).get("status"),
+            (security.get("secret_scanning") or {}).get("status"),
+            (security.get("secret_scanning_push_protection") or {}).get("status"),
+            (security.get("code_scanning") or {}).get("status"),
+        ]
+        enabled = len([status for status in statuses if status == "enabled"])
+        if enabled == len([status for status in statuses if status is not None]) and enabled > 0:
+            security_enabled += 1
+        elif enabled > 0:
+            security_partial += 1
+
+    if mfa_enabled is False:
+        status = "fail"
+        summary = "Account-level 2FA is disabled on the authenticated GitHub user."
+    elif org_total and orgs_with_required_2fa < org_total:
+        status = "warn"
+        summary = f"{org_total - orgs_with_required_2fa} organizations do not enforce 2FA."
+    else:
+        status = "pass"
+        summary = "GitHub account and organization security settings look broadly healthy."
+
+    return _github_build_service(
+        "settings",
+        "Settings",
+        status,
+        summary,
+        {
+            "mfa_enabled": bool(mfa_enabled),
+            "organizations": org_total,
+            "orgs_with_2fa_required": orgs_with_required_2fa,
+            "repos_with_full_security_features": security_enabled,
+            "repos_with_partial_security_features": security_partial,
+        },
+        [
+            f"Authenticated user 2FA: {'enabled' if mfa_enabled else 'disabled'}",
+            f"{orgs_with_required_2fa}/{org_total} organizations require 2FA",
+            f"{security_enabled} repositories expose all returned security feature toggles as enabled",
+        ],
+        {
+            "user": {
+                "login": user_data.get("login"),
+                "name": user_data.get("name"),
+                "email": user_data.get("email"),
+                "two_factor_authentication": user_data.get("two_factor_authentication"),
+                "created_at": user_data.get("created_at"),
+                "html_url": user_data.get("html_url"),
+            },
+            "organizations": org_details,
+            "repository_security": [
+                {
+                    "full_name": repo.get("full_name"),
+                    "security_and_analysis": repo.get("security_and_analysis"),
+                }
+                for repo in repos[:50]
+            ],
+        },
+    )
+
+
+def _github_analyze_vulnerabilities(headers, repos):
+    scanned_repos = []
+    open_alerts = 0
+    alerts_unavailable = 0
+    coverage_gaps = 0
+
+    for repo in repos[:15]:
+        repo_name = repo.get("full_name")
+        security = repo.get("security_and_analysis") or {}
+        feature_states = {
+            "dependabot_security_updates": (security.get("dependabot_security_updates") or {}).get("status"),
+            "secret_scanning": (security.get("secret_scanning") or {}).get("status"),
+            "push_protection": (security.get("secret_scanning_push_protection") or {}).get("status"),
+            "code_scanning": (security.get("code_scanning") or {}).get("status"),
+        }
+        if any(state in (None, "disabled") for state in feature_states.values()):
+            coverage_gaps += 1
+
+        alert_summary = {"full_name": repo_name, "feature_states": feature_states}
+        try:
+            resp = requests.get(
+                f"https://api.github.com/repos/{repo_name}/dependabot/alerts",
+                headers=headers,
+                params={"state": "open", "per_page": 100},
+                timeout=20,
+            )
+            if resp.status_code == 200:
+                alerts = resp.json()
+                open_alerts += len(alerts)
+                alert_summary["open_dependabot_alerts"] = len(alerts)
+                alert_summary["dependabot_alerts"] = alerts[:20]
+            else:
+                alerts_unavailable += 1
+                alert_summary["dependabot_alerts_error"] = f"{resp.status_code}: {resp.text[:200]}"
+        except Exception as exc:
+            alerts_unavailable += 1
+            alert_summary["dependabot_alerts_error"] = str(exc)
+
+        scanned_repos.append(alert_summary)
+
+    if open_alerts > 0:
+        status = "fail"
+        summary = f"{open_alerts} open Dependabot alerts were found in sampled repositories."
+    elif coverage_gaps > 0 or alerts_unavailable > 0:
+        status = "warn"
+        summary = "Vulnerability coverage is partial due to disabled features or unavailable alert scopes."
+    else:
+        status = "pass"
+        summary = "No open Dependabot alerts were found in the sampled repositories."
+
+    return _github_build_service(
+        "vulnerabilities",
+        "Vulnerabilities",
+        status,
+        summary,
+        {
+            "sampled_repositories": len(scanned_repos),
+            "open_dependabot_alerts": open_alerts,
+            "coverage_gaps": coverage_gaps,
+            "alert_queries_unavailable": alerts_unavailable,
+        },
+        [
+            f"{open_alerts} open Dependabot alerts across sampled repositories",
+            f"{coverage_gaps} repositories with security coverage gaps",
+            f"{alerts_unavailable} repositories where alert data was unavailable",
+        ],
+        {
+            "sample_scope": "first 15 accessible repositories",
+            "repositories": scanned_repos,
+        },
+    )
+
+
+def _github_analyze_issues(headers, username, repos):
+    issues_resp = requests.get(
+        "https://api.github.com/search/issues",
+        headers=headers,
+        params={"q": f"is:issue user:{username} state:open", "per_page": 30},
+        timeout=20,
+    )
+    issues_resp.raise_for_status()
+    issues_data = issues_resp.json()
+
+    open_issues_total = issues_data.get("total_count", 0)
+    repo_issue_total = sum(repo.get("open_issues_count", 0) for repo in repos)
+
+    if open_issues_total >= 20:
+        status = "warn"
+        summary = f"{open_issues_total} open issues are currently visible for user scope {username}."
+    else:
+        status = "pass"
+        summary = f"{open_issues_total} open issues were found in search results."
+
+    return _github_build_service(
+        "issues",
+        "Issues",
+        status,
+        summary,
+        {
+            "open_issue_search_results": open_issues_total,
+            "aggregate_open_issue_counts": repo_issue_total,
+            "sampled_results": len(issues_data.get("items", [])),
+        },
+        [
+            f"Search scope: issues under user/org namespace {username}",
+            f"Repository aggregate open issues count: {repo_issue_total}",
+        ],
+        {
+            "query_scope": f"is:issue user:{username} state:open",
+            "search_results": issues_data,
+        },
+    )
+
+
+def check_github_posture(api_token):
+    """Build a GitHub integration view across repositories, PRs, settings, vulnerabilities, and issues."""
+    results = {
+        "provider": "github",
+        "check": "GitHub Posture Overview",
+        "timestamp": datetime.utcnow().isoformat(),
+        "screenshots": [],
+        "api_findings": {},
+        "vision_analysis": {},
+        "status": "completed",
+        "services": {},
+        "github_summary": {},
+    }
+
+    headers = _github_headers(api_token)
+
+    try:
+        user_response = requests.get("https://api.github.com/user", headers=headers, timeout=20)
         user_response.raise_for_status()
         user_data = user_response.json()
-        results["api_findings"]["user"] = {
-            "login": user_data.get("login"),
-            "name": user_data.get("name"),
-            "email": user_data.get("email"),
-            "two_factor_authentication": user_data.get("two_factor_authentication"),
-        }
-
-        mfa_status = user_data.get("two_factor_authentication")
-        if mfa_status is not None:
-            results["mfa_enabled"] = mfa_status
-        results["api_findings"]["authentication"] = "success"
-    except Exception as e:
-        results["api_findings"]["authentication"] = f"failed: {str(e)}"
+    except Exception as exc:
         results["status"] = "error"
+        results["api_findings"]["authentication"] = f"failed: {exc}"
         return results
 
-    # Step 2: Check organization MFA requirements (if user is in orgs)
+    username = user_data.get("login")
+    results["api_findings"]["authentication"] = "success"
+    results["api_findings"]["user"] = {
+        "login": user_data.get("login"),
+        "name": user_data.get("name"),
+        "email": user_data.get("email"),
+        "two_factor_authentication": user_data.get("two_factor_authentication"),
+    }
+
+    repos = []
+    org_details = []
+    errors = []
+
     try:
-        orgs_response = requests.get("https://api.github.com/user/orgs", headers=headers, timeout=15)
-        if orgs_response.status_code == 200:
-            orgs = orgs_response.json()
-            org_findings = []
-            for org in orgs:
-                org_name = org.get("login")
-                # Check org MFA requirement
-                org_detail_response = requests.get(
-                    f"https://api.github.com/orgs/{org_name}",
-                    headers=headers, timeout=15,
-                )
-                if org_detail_response.status_code == 200:
-                    org_data = org_detail_response.json()
-                    org_findings.append({
-                        "name": org_name,
-                        "two_factor_requirement_enabled": org_data.get("two_factor_requirement_enabled"),
-                    })
+        repos = _github_paginated_get(
+            "https://api.github.com/user/repos",
+            headers,
+            params={"sort": "updated", "affiliation": "owner,collaborator,organization_member"},
+            max_pages=3,
+        )
+    except Exception as exc:
+        errors.append(f"repositories: {exc}")
 
-                # List members without 2FA (requires admin)
-                no_2fa_url = f"https://api.github.com/orgs/{org_name}/members?filter=2fa_disabled"
-                no_2fa_response = requests.get(no_2fa_url, headers=headers, timeout=15)
-                if no_2fa_response.status_code == 200:
-                    members_without_2fa = no_2fa_response.json()
-                    org_findings[-1]["members_without_2fa"] = len(members_without_2fa)
+    try:
+        orgs = _github_paginated_get("https://api.github.com/user/orgs", headers, max_pages=2)
+        for org in orgs[:25]:
+            try:
+                detail_resp = requests.get(f"https://api.github.com/orgs/{org['login']}", headers=headers, timeout=20)
+                if detail_resp.status_code == 200:
+                    org_details.append(detail_resp.json())
+            except Exception as exc:
+                org_details.append({"login": org.get("login"), "error": str(exc)})
+    except Exception as exc:
+        errors.append(f"organizations: {exc}")
 
-            results["api_findings"]["organizations"] = org_findings
-    except Exception as e:
-        results["api_findings"]["organizations_error"] = str(e)
+    def _safe_service(key, name, fn):
+        try:
+            return fn()
+        except Exception as exc:
+            errors.append(f"{key}: {exc}")
+            return _github_build_service(
+                key,
+                name,
+                "unknown",
+                f"{name} could not be fully assessed with the current token scope.",
+                {},
+                [str(exc)],
+                {"error": str(exc)},
+            )
 
-    # Step 3: Take screenshots via Playwright
-    screenshots = _take_github_screenshots(api_token, user_data.get("login", ""))
+    services = {
+        "repositories": _safe_service("repositories", "Repositories", lambda: _github_analyze_repositories(headers, repos)),
+        "pull_requests": _safe_service("pull_requests", "Pull Requests", lambda: _github_analyze_pull_requests(headers, username)),
+        "settings": _safe_service("settings", "Settings", lambda: _github_analyze_settings(user_data, org_details, repos)),
+        "vulnerabilities": _safe_service("vulnerabilities", "Vulnerabilities", lambda: _github_analyze_vulnerabilities(headers, repos)),
+        "issues": _safe_service("issues", "Issues", lambda: _github_analyze_issues(headers, username, repos)),
+    }
+    results["services"] = services
+
+    status_counts = {"pass": 0, "warn": 0, "fail": 0, "unknown": 0}
+    for service in services.values():
+        status_counts[service["status"]] = status_counts.get(service["status"], 0) + 1
+
+    overall_status = _github_pick_worst_status([service["status"] for service in services.values()])
+    overall_score = round(sum(service["score"] for service in services.values()) / max(len(services), 1))
+
+    results["api_findings"]["organizations"] = [
+        {
+            "login": org.get("login"),
+            "name": org.get("name"),
+            "two_factor_requirement_enabled": org.get("two_factor_requirement_enabled"),
+        }
+        for org in org_details
+    ]
+    results["api_findings"]["summary"] = {
+        "score": overall_score,
+        "overall_status": overall_status,
+        "services": {
+            key: {
+                "status": service["status"],
+                "summary": service["summary"],
+                "metrics": service["metrics"],
+            }
+            for key, service in services.items()
+        },
+    }
+    if errors:
+        results["api_findings"]["warnings"] = errors
+
+    results["github_summary"] = {
+        "overall_status": overall_status,
+        "score": overall_score,
+        "status_counts": status_counts,
+        "service_order": list(services.keys()),
+        "bar_graph": [
+            {"key": key, "label": service["name"], "score": service["score"], "status": service["status"]}
+            for key, service in services.items()
+        ],
+    }
+
+    screenshots = _take_github_screenshots(results)
     results["screenshots"] = screenshots
 
-    # Step 4: Analyze screenshots with vision model
     for ss in screenshots:
-        if os.path.exists(ss["path"]):
-            prompt = f"""You are a security compliance auditor. Analyze this screenshot from GitHub.
+        if not os.path.exists(ss["path"]):
+            continue
+        prompt = f"""You are a security compliance auditor. Analyze this GitHub posture screenshot.
 
-This screenshot shows the {ss['label']} page on GitHub.
+This screenshot shows the {ss['label']} view from a GitHub integration dashboard.
 
-Determine:
-1. Is Multi-Factor Authentication (MFA / 2FA) enabled for this account?
-2. What security settings are visible?
-3. What is the overall MFA compliance status?
-
-Respond in this JSON format:
+Respond in JSON with:
 {{
-    "mfa_status": "enabled|disabled|unknown",
-    "findings": ["list of specific observations from the screenshot"],
-    "compliance_assessment": "A clear statement about whether MFA is properly configured",
-    "confidence": 0.85
+  "page_summary": "brief summary",
+  "risk_level": "low|medium|high|critical|unknown",
+  "security_observations": ["specific observations"],
+  "configuration_details": ["specific details"],
+  "recommendations": ["recommended actions"],
+  "confidence": 0.85
 }}
 
 Respond ONLY with JSON."""
-            try:
-                analysis = _analyze_screenshot_with_vision(ss["path"], prompt)
-                results["vision_analysis"][ss["label"]] = analysis
-            except Exception as e:
-                results["vision_analysis"][ss["label"]] = {"error": str(e)}
+        try:
+            results["vision_analysis"][ss["label"]] = _analyze_screenshot_with_vision(ss["path"], prompt)
+        except Exception as exc:
+            results["vision_analysis"][ss["label"]] = {"error": str(exc)}
 
     return results
 
 
-def _take_github_screenshots(api_token, username):
-    """Render GitHub security data as visual reports and screenshot them."""
+def _take_github_screenshots(results):
+    """Render GitHub posture summary as polished dashboard screenshots."""
     screenshots = []
+    user_data = (results.get("services", {}).get("settings", {}).get("metadata", {}) or {}).get("user", {})
+    services = results.get("services", {})
+    summary = results.get("github_summary", {})
 
-    headers = {
-        "Authorization": f"token {api_token}",
-        "Accept": "application/vnd.github+json",
-        "X-GitHub-Api-Version": "2022-11-28",
-    }
-
-    # Fetch data via API
-    user_data = {}
-    try:
-        resp = requests.get("https://api.github.com/user", headers=headers, timeout=15)
-        if resp.status_code == 200:
-            user_data = resp.json()
-    except Exception:
-        pass
-
-    org_data = []
-    try:
-        resp = requests.get("https://api.github.com/user/orgs", headers=headers, timeout=15)
-        if resp.status_code == 200:
-            for org in resp.json():
-                org_detail = requests.get(f"https://api.github.com/orgs/{org['login']}", headers=headers, timeout=15)
-                if org_detail.status_code == 200:
-                    org_data.append(org_detail.json())
-    except Exception:
-        pass
-
-    # Fetch user's public profile page screenshot
     try:
         from playwright.sync_api import sync_playwright
 
-        mfa_enabled = user_data.get("two_factor_authentication", False)
+        status_palette = {
+            "pass": ("#34d399", "#062b23"),
+            "warn": ("#fbbf24", "#2f2102"),
+            "fail": ("#fb7185", "#350814"),
+            "unknown": ("#93c5fd", "#091629"),
+        }
 
-        # Build HTML reports from API data
-        reports = []
-
-        # Report 1: User Security Overview
-        mfa_badge_color = "#2ea043" if mfa_enabled else "#da3633"
-        mfa_badge_text = "ENABLED" if mfa_enabled else "DISABLED"
-        mfa_icon = "&#x2713;" if mfa_enabled else "&#x2717;"
-
-        orgs_html = ""
-        if org_data:
-            org_rows = ""
-            for org in org_data:
-                org_2fa = org.get("two_factor_requirement_enabled", False)
-                org_color = "#2ea043" if org_2fa else "#da3633"
-                org_status = "Required" if org_2fa else "Not Required"
-                org_rows += f"""
-                <tr>
-                    <td><img src="{org.get('avatar_url', '')}" width="24" height="24" style="border-radius:50%;vertical-align:middle;margin-right:8px">{org.get('login', 'N/A')}</td>
-                    <td><span style="color:{org_color};font-weight:600">{org_status}</span></td>
-                </tr>"""
-            orgs_html = f"""
-            <div style="margin-top:24px">
-                <h3 style="color:#e6edf3;font-size:16px;margin-bottom:12px;border-bottom:1px solid #30363d;padding-bottom:8px">Organization 2FA Requirements</h3>
-                <table style="width:100%;border-collapse:collapse">
-                    <tr><th style="text-align:left;color:#8b949e;font-size:12px;padding:8px 0;border-bottom:1px solid #21262d">Organization</th><th style="text-align:left;color:#8b949e;font-size:12px;padding:8px 0;border-bottom:1px solid #21262d">2FA Policy</th></tr>
-                    {org_rows}
-                </table>
+        service_cards = ""
+        for service in services.values():
+            accent, tint = status_palette.get(service["status"], status_palette["unknown"])
+            service_cards += f"""
+            <div class="service-card">
+                <div class="service-top">
+                    <span class="service-name">{service['name']}</span>
+                    <span class="service-badge" style="color:{accent};background:{tint};border-color:{accent}44">{service['status'].upper()}</span>
+                </div>
+                <div class="service-score">{service['score']}</div>
+                <p>{service['summary']}</p>
             </div>"""
 
-        security_html = f"""<!DOCTYPE html>
-<html><head><style>
-body {{ font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Noto Sans, Helvetica, Arial, sans-serif; background: #0d1117; color: #c9d1d9; margin: 0; padding: 32px; }}
-.container {{ max-width: 800px; margin: 0 auto; }}
-.header {{ display: flex; align-items: center; gap: 16px; margin-bottom: 32px; padding-bottom: 16px; border-bottom: 1px solid #30363d; }}
-.avatar {{ width: 64px; height: 64px; border-radius: 50%; border: 2px solid #30363d; }}
-.user-info h1 {{ font-size: 24px; color: #e6edf3; margin: 0 0 4px; }}
-.user-info p {{ font-size: 14px; color: #8b949e; margin: 0; }}
-.badge {{ display: inline-flex; align-items: center; gap: 6px; padding: 6px 16px; border-radius: 20px; font-size: 13px; font-weight: 600; }}
-.card {{ background: #161b22; border: 1px solid #30363d; border-radius: 6px; padding: 24px; margin-bottom: 16px; }}
-.status-row {{ display: flex; justify-content: space-between; align-items: center; padding: 12px 0; border-bottom: 1px solid #21262d; }}
-.status-row:last-child {{ border-bottom: none; }}
-.status-label {{ color: #c9d1d9; font-size: 14px; }}
-.status-value {{ font-weight: 600; font-size: 14px; }}
-.section-title {{ color: #e6edf3; font-size: 20px; font-weight: 600; margin: 0 0 16px; display: flex; align-items: center; gap: 8px; }}
-.github-logo {{ color: #e6edf3; }}
-</style></head><body>
-<div class="container">
-    <div class="header">
-        <img class="avatar" src="{user_data.get('avatar_url', 'https://github.githubassets.com/images/modules/logos_page/GitHub-Mark.png')}" alt="avatar">
-        <div class="user-info">
-            <h1>{user_data.get('name', user_data.get('login', 'Unknown'))}</h1>
-            <p>@{user_data.get('login', 'unknown')} &middot; {user_data.get('email') or 'No public email'}</p>
+        bars = ""
+        for item in summary.get("bar_graph", []):
+            accent, _ = status_palette.get(item["status"], status_palette["unknown"])
+            bars += f"""
+            <div class="bar-row">
+                <div class="bar-label"><span>{item['label']}</span><strong>{item['score']}</strong></div>
+                <div class="bar-track"><div class="bar-fill" style="width:{item['score']}%;background:{accent}"></div></div>
+            </div>"""
+
+        overview_html = f"""<!DOCTYPE html>
+<html>
+<head>
+<style>
+body {{ margin:0; padding:40px; font-family:'Segoe UI',sans-serif; background:radial-gradient(circle at top, #172554 0%, #09090f 46%, #05070c 100%); color:#eef2ff; }}
+.shell {{ max-width:1240px; margin:0 auto; background:linear-gradient(180deg, rgba(15,23,42,0.92), rgba(6,10,18,0.95)); border:1px solid rgba(148,163,184,0.18); border-radius:28px; overflow:hidden; box-shadow:0 30px 80px rgba(0,0,0,0.45); }}
+.hero {{ padding:32px 36px 24px; background:linear-gradient(135deg, rgba(56,189,248,0.18), rgba(168,85,247,0.12), rgba(244,114,182,0.08)); }}
+.eyebrow {{ display:inline-flex; padding:8px 12px; border-radius:999px; background:rgba(255,255,255,0.08); font-size:12px; letter-spacing:0.12em; text-transform:uppercase; }}
+.hero h1 {{ font-size:38px; margin:16px 0 8px; }}
+.hero p {{ margin:0; color:#cbd5e1; font-size:16px; }}
+.grid {{ display:grid; grid-template-columns:1.2fr 0.8fr; gap:24px; padding:28px 36px 36px; }}
+.panel {{ background:rgba(15,23,42,0.72); border:1px solid rgba(148,163,184,0.16); border-radius:24px; padding:24px; }}
+.stats {{ display:grid; grid-template-columns:repeat(4,1fr); gap:14px; margin:18px 0 0; }}
+.stat {{ padding:16px; border-radius:18px; background:rgba(255,255,255,0.04); }}
+.stat strong {{ display:block; font-size:26px; margin-top:6px; }}
+.services {{ display:grid; grid-template-columns:repeat(2,1fr); gap:14px; }}
+.service-card {{ padding:18px; border-radius:18px; background:rgba(255,255,255,0.04); border:1px solid rgba(255,255,255,0.06); min-height:150px; }}
+.service-top {{ display:flex; justify-content:space-between; gap:12px; align-items:center; }}
+.service-name {{ font-size:15px; font-weight:700; }}
+.service-badge {{ border:1px solid; border-radius:999px; padding:6px 10px; font-size:11px; letter-spacing:0.08em; }}
+.service-score {{ font-size:36px; font-weight:800; margin:14px 0 6px; }}
+.service-card p {{ color:#cbd5e1; line-height:1.5; font-size:14px; margin:0; }}
+.bar-row {{ margin-bottom:14px; }}
+.bar-label {{ display:flex; justify-content:space-between; margin-bottom:8px; font-size:13px; color:#cbd5e1; }}
+.bar-track {{ height:12px; border-radius:999px; background:rgba(148,163,184,0.12); overflow:hidden; }}
+.bar-fill {{ height:100%; border-radius:999px; }}
+</style>
+</head>
+<body>
+    <div class="shell">
+        <div class="hero">
+            <span class="eyebrow">GitHub Integration Overview</span>
+            <h1>{user_data.get('name') or user_data.get('login') or 'GitHub Account'}</h1>
+            <p>@{user_data.get('login', 'unknown')} · Overall score {summary.get('score', 0)} · Status {summary.get('overall_status', 'unknown').upper()}</p>
+            <div class="stats">
+                <div class="stat"><span>Passed</span><strong>{summary.get('status_counts', {}).get('pass', 0)}</strong></div>
+                <div class="stat"><span>Warnings</span><strong>{summary.get('status_counts', {}).get('warn', 0)}</strong></div>
+                <div class="stat"><span>Failures</span><strong>{summary.get('status_counts', {}).get('fail', 0)}</strong></div>
+                <div class="stat"><span>Unknown</span><strong>{summary.get('status_counts', {}).get('unknown', 0)}</strong></div>
+            </div>
+        </div>
+        <div class="grid">
+            <div class="panel">
+                <h2>Service Status</h2>
+                <div class="services">{service_cards}</div>
+            </div>
+            <div class="panel">
+                <h2>Score Graph</h2>
+                {bars}
+            </div>
         </div>
     </div>
-    <h2 class="section-title">
-        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#e6edf3" stroke-width="2"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
-        Security Settings &mdash; Two-Factor Authentication
-    </h2>
-    <div class="card">
-        <div class="status-row">
-            <span class="status-label">Two-Factor Authentication (2FA)</span>
-            <span class="badge" style="background:{mfa_badge_color}22;color:{mfa_badge_color};border:1px solid {mfa_badge_color}44">{mfa_icon} {mfa_badge_text}</span>
-        </div>
-        <div class="status-row">
-            <span class="status-label">Account Type</span>
-            <span class="status-value" style="color:#8b949e">{user_data.get('type', 'User')}</span>
-        </div>
-        <div class="status-row">
-            <span class="status-label">Public Repos</span>
-            <span class="status-value" style="color:#8b949e">{user_data.get('public_repos', 0)}</span>
-        </div>
-        <div class="status-row">
-            <span class="status-label">Account Created</span>
-            <span class="status-value" style="color:#8b949e">{user_data.get('created_at', 'N/A')[:10]}</span>
-        </div>
-        <div class="status-row">
-            <span class="status-label">Profile URL</span>
-            <span class="status-value" style="color:#58a6ff">{user_data.get('html_url', 'N/A')}</span>
-        </div>
-        {orgs_html}
-    </div>
-    <p style="color:#484f58;font-size:12px;text-align:center;margin-top:24px">
-        Data retrieved via GitHub REST API &middot; GET /user &middot; Timestamp: {datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S UTC')}
-    </p>
-</div>
-</body></html>"""
+</body>
+</html>"""
 
-        reports.append(("mfa_status", security_html, "GitHub MFA Security Report"))
-
-        # Report 2: User's public profile page
-        profile_url = user_data.get("html_url", f"https://github.com/{username}")
-        reports.append(("public_profile", profile_url, "GitHub Public Profile"))
+        profile_url = user_data.get("html_url", f"https://github.com/{user_data.get('login', '')}")
+        reports = [
+            ("posture_overview", overview_html, "GitHub posture overview dashboard"),
+            ("public_profile", profile_url, "GitHub public profile"),
+        ]
 
         with sync_playwright() as p:
             browser = p.chromium.launch(headless=True, args=["--no-sandbox", "--disable-dev-shm-usage"])
-            context = browser.new_context(viewport={"width": 1024, "height": 900})
+            context = browser.new_context(viewport={"width": 1440, "height": 1200}, device_scale_factor=1)
             page = context.new_page()
 
             for label, content, description in reports:
@@ -2161,249 +2726,96 @@ body {{ font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Noto Sans, H
                         "description": description,
                         "url": content if content.startswith("http") else "rendered-from-api-data",
                     })
-                    logger.info(f"GitHub screenshot captured: {label}")
-                except Exception as e:
-                    logger.error(f"Failed to capture GitHub screenshot '{label}': {e}")
+                except Exception as exc:
+                    logger.error(f"Failed to capture GitHub screenshot '{label}': {exc}")
 
             browser.close()
-
     except ImportError:
         logger.warning("Playwright not installed. Skipping browser screenshots.")
-    except Exception as e:
-        logger.error(f"GitHub screenshot capture error: {e}")
+    except Exception as exc:
+        logger.error(f"GitHub screenshot capture error: {exc}")
 
     return screenshots
 
 
-
 # ═══════════════════════════════════════════════════════
-# Datadog Service Registry
+# Snowflake Service Registry
 # ═══════════════════════════════════════════════════════
 
-DATADOG_SERVICE_PAGES = {
-    "monitors_alerts": {
-        "name": "Monitors & Alerts",
-        "description": "Alert monitors, SLOs, and notification policies",
+SNOWFLAKE_SERVICE_PAGES = {
+    "warehouses": {
+        "name": "Warehouses",
+        "description": "Compute warehouse management",
         "checks": [
-            {"id": "monitors_overview", "name": "Monitor Overview", "description": "All configured monitors and their status",
-             "pages": [{"label": "dd_monitors", "display": "Monitors", "url": "/monitors/manage"}],
-             "focus": "List all monitors — their status (OK/Alert/Warn/No Data), type (metric/log/APM/composite), and identify monitors in alert state or with no data"},
-            {"id": "triggered_alerts", "name": "Triggered Alerts", "description": "Currently firing alerts",
-             "pages": [{"label": "dd_triggered", "display": "Triggered Monitors", "url": "/monitors/triggered"}],
-             "focus": "Review all currently triggered monitors — severity, duration, affected services/hosts, and any monitors that have been alerting for an extended period"},
-            {"id": "slos", "name": "Service Level Objectives", "description": "SLO status and error budgets",
-             "pages": [{"label": "dd_slos", "display": "SLOs", "url": "/slo"}],
-             "focus": "Review SLO compliance — which SLOs are on track vs breaching, error budget remaining, and SLOs at risk of failing within the next 7 days"},
-            {"id": "downtime", "name": "Scheduled Downtimes", "description": "Maintenance windows and alert suppressions",
-             "pages": [{"label": "dd_downtime", "display": "Downtimes", "url": "/monitors/downtimes"}],
-             "focus": "Review scheduled downtimes — scope, duration, which monitors are silenced, and identify any permanent or overly broad downtimes masking real issues"},
-            {"id": "monitor_settings", "name": "Monitor Settings & Policies", "description": "Notification channels and escalation policies",
-             "pages": [{"label": "dd_monitor_settings", "display": "Monitor Settings", "url": "/monitors/settings"}],
-             "focus": "Review monitor notification settings — default routing, escalation policies, and whether critical monitors have proper alert recipients configured"},
-            {"id": "composite_monitors", "name": "Composite Monitors", "description": "Multi-condition combined monitors",
-             "pages": [{"label": "dd_composite", "display": "Composite Monitors", "url": "/monitors/manage?q=type%3Acomposite"}],
-             "focus": "Review composite monitor logic — which sub-monitors are combined, the boolean expression used, and whether the composite conditions make security sense"},
-            {"id": "synthetics", "name": "Synthetic Tests", "description": "Uptime and browser synthetic tests",
-             "pages": [{"label": "dd_synthetics", "display": "Synthetic Tests", "url": "/synthetics/list"}],
-             "focus": "List synthetic tests — API tests, browser tests, their locations, frequency, alert thresholds, and tests that are failing or have recent failures"},
-            {"id": "alerts_history", "name": "Alert History", "description": "Recent alert events and resolutions",
-             "pages": [{"label": "dd_alert_history", "display": "Alert History", "url": "/monitors/manage?q=status%3Aalert"}],
-             "focus": "Review monitors currently in alert — how long they have been alerting, affected resources, and whether appropriate responders are notified"},
+            {"id": "warehouse_list", "name": "Warehouse Inventory", "description": "All warehouses and their configuration",
+             "pages": [{"label": "sf_warehouses", "display": "Warehouses", "path": "/compute/history/warehouses"}],
+             "focus": "List all warehouses — name, size (XS to 6XL), state (running/suspended), auto-suspend/resume settings, and cluster count"},
         ],
     },
-    "infrastructure": {
-        "name": "Infrastructure",
-        "description": "Hosts, containers, processes, and network monitoring",
+    "databases": {
+        "name": "Databases",
+        "description": "Database and schema management",
         "checks": [
-            {"id": "host_map", "name": "Host Map", "description": "All monitored hosts and their health",
-             "pages": [{"label": "dd_hostmap", "display": "Host Map", "url": "/infrastructure/map"}],
-             "focus": "Review the host map — total host count, health distribution (green/yellow/red), host groups, and any hosts reporting issues or going silent"},
-            {"id": "host_list", "name": "Host List", "description": "Infrastructure host inventory",
-             "pages": [{"label": "dd_hosts", "display": "Host List", "url": "/infrastructure"}],
-             "focus": "List all hosts — their agent version, platform, CPU/memory usage, last reported time, and identify hosts with outdated agents or high resource utilization"},
-            {"id": "containers", "name": "Containers", "description": "Running containers and resource usage",
-             "pages": [{"label": "dd_containers", "display": "Containers", "url": "/containers"}],
-             "focus": "Review container inventory — container status, image names, resource consumption (CPU/memory), and containers with excessive resource usage or frequent restarts"},
-            {"id": "processes", "name": "Live Processes", "description": "Running processes across infrastructure",
-             "pages": [{"label": "dd_processes", "display": "Live Processes", "url": "/process"}],
-             "focus": "Review live processes — top CPU/memory consumers, unusual process names, and processes running as root or with elevated privileges"},
-            {"id": "network", "name": "Network Performance", "description": "Service-to-service network flows",
-             "pages": [{"label": "dd_network", "display": "Network", "url": "/network"}],
-             "focus": "Analyze network flows — top talkers, unexpected connections, high error-rate flows, and services with unusual outbound traffic patterns"},
-            {"id": "serverless", "name": "Serverless Functions", "description": "Lambda and serverless monitoring",
-             "pages": [{"label": "dd_serverless", "display": "Serverless", "url": "/functions"}],
-             "focus": "Review serverless functions — invocation counts, error rates, cold start frequency, and functions with high duration or memory usage"},
-            {"id": "cloud_cost", "name": "Cloud Cost Management", "description": "Cloud spend analysis and optimization",
-             "pages": [{"label": "dd_cloud_cost", "display": "Cloud Cost", "url": "/cost-management"}],
-             "focus": "Review cloud cost breakdown — top cost services, anomalous spend increases, cost by tag/team, and optimization recommendations"},
-            {"id": "agent_status", "name": "Agent Health", "description": "Datadog agent deployment status",
-             "pages": [{"label": "dd_agent", "display": "Agent Status", "url": "/infrastructure"}],
-             "focus": "Review Datadog agent deployment — agent versions deployed, hosts missing agents, agent connectivity issues, and integration check failures"},
+            {"id": "database_list", "name": "Database Inventory", "description": "All databases and schemas",
+             "pages": [{"label": "sf_databases", "display": "Databases", "path": "/data/databases"}],
+             "focus": "List all databases — name, owner, creation date, retention time, and schema count"},
         ],
     },
-    "apm_traces": {
-        "name": "APM & Tracing",
-        "description": "Application performance, service map, and error tracking",
+    "users": {
+        "name": "Users & Roles",
+        "description": "Identity and access management",
         "checks": [
-            {"id": "service_map", "name": "Service Map", "description": "Service dependency topology",
-             "pages": [{"label": "dd_service_map", "display": "Service Map", "url": "/apm/map"}],
-             "focus": "Review the service dependency map — service connections, latency between services, error rates on edges, and any unexpected external connections"},
-            {"id": "services_list", "name": "Services List", "description": "All APM-instrumented services",
-             "pages": [{"label": "dd_services", "display": "Services", "url": "/apm/services"}],
-             "focus": "List all APM services — request rate, error rate (p99 latency), and identify services with elevated error rates or degraded performance"},
-            {"id": "traces", "name": "Trace Explorer", "description": "Distributed traces and spans",
-             "pages": [{"label": "dd_traces", "display": "Traces", "url": "/apm/traces"}],
-             "focus": "Review recent traces — identify high-latency traces, error traces, and traces showing unusual service call patterns or excessive downstream calls"},
-            {"id": "error_tracking", "name": "Error Tracking", "description": "Application error groups and trends",
-             "pages": [{"label": "dd_errors", "display": "Error Tracking", "url": "/apm/error-tracking"}],
-             "focus": "Review error groups — error frequency, first/last seen, affected users, and unhandled errors that should be prioritized for investigation"},
-            {"id": "profiling", "name": "Continuous Profiler", "description": "CPU and memory profiling data",
-             "pages": [{"label": "dd_profiling", "display": "Profiling", "url": "/profiling"}],
-             "focus": "Review profiling data — top CPU consumers, memory allocation hotspots, lock contention, and functions consuming disproportionate resources"},
-            {"id": "rum", "name": "Real User Monitoring", "description": "Frontend user experience metrics",
-             "pages": [{"label": "dd_rum", "display": "RUM", "url": "/rum/explorer"}],
-             "focus": "Review RUM data — page load times, Core Web Vitals, session replay errors, and user sessions with poor experience scores"},
-            {"id": "slo_apm", "name": "APM SLOs", "description": "SLOs based on APM service health",
-             "pages": [{"label": "dd_apm_slos", "display": "APM SLOs", "url": "/slo?q=type%3Aservice"}],
-             "focus": "Review APM-based SLOs — service availability and latency SLOs, error budget consumption rate, and SLOs approaching breach"},
-            {"id": "deployment_tracking", "name": "Deployment Tracking", "description": "Code deployment impact on performance",
-             "pages": [{"label": "dd_deployments", "display": "Deployments", "url": "/apm/deployment-tracking"}],
-             "focus": "Review recent deployments — performance changes post-deploy, error rate increases, and deployments that introduced regressions"},
+            {"id": "user_list", "name": "User Inventory", "description": "All user accounts and their status",
+             "pages": [{"label": "sf_users", "display": "Users", "path": "/admin/users-and-roles"}],
+             "focus": "List all users — name, login name, default role, MFA status, last login, disabled status, and whether password is expired"},
+            {"id": "role_list", "name": "Role Hierarchy", "description": "All roles and privilege grants",
+             "pages": [{"label": "sf_roles", "display": "Roles", "path": "/admin/roles"}],
+             "focus": "List all roles — name, type (system/custom), granted-to count, and privilege hierarchy"},
         ],
     },
     "security": {
-        "name": "Security",
-        "description": "Security signals, threats, vulnerabilities, and compliance",
+        "name": "Governance & Security",
+        "description": "Network policies and security settings",
         "checks": [
-            {"id": "security_signals", "name": "Security Signals", "description": "Active security threats and detections",
-             "pages": [{"label": "dd_sec_signals", "display": "Security Signals", "url": "/security/threats/signals"}],
-             "focus": "Review security signals — severity (critical/high/medium), threat type, affected resources, and signals that have been open for extended periods without review"},
-            {"id": "cloud_security", "name": "Cloud Security Posture", "description": "CSM misconfigurations and compliance",
-             "pages": [{"label": "dd_csm", "display": "Cloud Security", "url": "/security/csm"}],
-             "focus": "Review cloud security posture — misconfiguration findings by severity, affected resources, compliance framework coverage, and high-severity findings requiring immediate remediation"},
-            {"id": "vulnerabilities", "name": "Vulnerability Management", "description": "CVE findings in infrastructure and code",
-             "pages": [{"label": "dd_vulns", "display": "Vulnerabilities", "url": "/security/vulnerabilities"}],
-             "focus": "Review vulnerability findings — critical/high CVEs, exploitability score, affected services, and vulnerabilities that have been open past SLA"},
-            {"id": "identity_risks", "name": "Identity & Access Risks", "description": "IAM misconfigurations and risky permissions",
-             "pages": [{"label": "dd_identity", "display": "Identity Risks", "url": "/security/identities"}],
-             "focus": "Review identity risk findings — over-privileged roles, unused permissions, publicly exposed credentials, and IAM configuration violations"},
-            {"id": "threat_detection", "name": "Threat Detection Rules", "description": "SIEM detection rule configurations",
-             "pages": [{"label": "dd_threat_rules", "display": "Detection Rules", "url": "/security/configuration/workload-rules"}],
-             "focus": "Review threat detection rules — enabled/disabled rules, rule coverage by MITRE ATT&CK category, custom rules, and rules with no recent matches (potential dead rules)"},
-            {"id": "compliance_posture", "name": "Compliance Posture", "description": "CIS, SOC2, PCI-DSS compliance coverage",
-             "pages": [{"label": "dd_compliance", "display": "Compliance", "url": "/security/compliance"}],
-             "focus": "Review compliance posture — passing/failing checks per framework (CIS, SOC2, PCI-DSS, HIPAA), overall score, and highest-impact failing controls"},
-            {"id": "audit_trail", "name": "Audit Trail", "description": "User activity and configuration changes",
-             "pages": [{"label": "dd_audit", "display": "Audit Trail", "url": "/audit-trail"}],
-             "focus": "Review audit trail events — user login events, configuration changes, API key usage, dashboard modifications, and any events from unrecognized users or IPs"},
-            {"id": "api_keys", "name": "API & Application Keys", "description": "API keys and application key management",
-             "pages": [{"label": "dd_api_keys", "display": "API Keys", "url": "/organization-settings/api-keys"}],
-             "focus": "List all API keys — their names, creators, last used date, and identify keys that are unused (candidates for rotation or deletion)"},
+            {"id": "network_policies", "name": "Network Policies", "description": "IP allow/block lists and access rules",
+             "pages": [{"label": "sf_governance_security", "display": "Governance & Security", "path": "/governance-security"}],
+             "focus": "Review security settings — network policies, access history, data masking policies, row-level security, and any governance rules configured"},
         ],
     },
-    "logs": {
-        "name": "Log Management",
-        "description": "Log ingestion, pipelines, indexes, and archives",
+    "monitoring": {
+        "name": "Monitoring",
+        "description": "Query and warehouse performance monitoring",
         "checks": [
-            {"id": "log_explorer", "name": "Log Explorer", "description": "Live log stream and search",
-             "pages": [{"label": "dd_logs", "display": "Log Explorer", "url": "/logs"}],
-             "focus": "Review the log stream — error log rate, top log sources, unusual log volumes, and error patterns that indicate application issues"},
-            {"id": "log_pipelines", "name": "Log Pipelines", "description": "Log processing and parsing rules",
-             "pages": [{"label": "dd_log_pipelines", "display": "Pipelines", "url": "/logs/pipelines"}],
-             "focus": "Review log pipelines — enabled/disabled pipelines, processor types, parsing rules, and pipelines processing sensitive data (PII handling)"},
-            {"id": "log_indexes", "name": "Log Indexes", "description": "Log retention and sampling configuration",
-             "pages": [{"label": "dd_log_indexes", "display": "Indexes", "url": "/logs/pipelines/indexes"}],
-             "focus": "Review log indexes — daily log volume per index, retention period (days), sampling rules, and indexes approaching quota limits"},
-            {"id": "log_archives", "name": "Log Archives", "description": "Long-term log storage configuration",
-             "pages": [{"label": "dd_log_archives", "display": "Archives", "url": "/logs/pipelines/archives"}],
-             "focus": "Review log archive configurations — destination (S3/GCS/Azure Blob), encryption, filter rules, and whether all required log types are archived for compliance"},
-            {"id": "log_metrics", "name": "Log-Based Metrics", "description": "Custom metrics derived from logs",
-             "pages": [{"label": "dd_log_metrics", "display": "Log Metrics", "url": "/logs/pipelines/generate-metrics"}],
-             "focus": "Review log-based metrics — metric names, query filters, group-by tags, and metrics that may have high cardinality causing cost issues"},
-            {"id": "sensitive_data", "name": "Sensitive Data Scanner", "description": "PII and secret detection in logs",
-             "pages": [{"label": "dd_sds", "display": "Sensitive Data Scanner", "url": "/logs/pipelines/sensitive-data-scanner"}],
-             "focus": "Review Sensitive Data Scanner rules — which data types are scanned (SSN, credit cards, API keys), redaction vs tagging action, and scanning groups"},
-            {"id": "log_patterns", "name": "Log Patterns", "description": "Automated log clustering and anomalies",
-             "pages": [{"label": "dd_log_patterns", "display": "Log Patterns", "url": "/logs?live=true&cols=host%2Cservice"}],
-             "focus": "Review log volume trends — identify spikes in error logs, new log sources that appeared recently, and services with zero logs (potential monitoring gap)"},
-            {"id": "exclusion_filters", "name": "Exclusion Filters", "description": "Log sampling and exclusion rules",
-             "pages": [{"label": "dd_exclusion", "display": "Exclusion Filters", "url": "/logs/pipelines/indexes"}],
-             "focus": "Review exclusion filters — which log queries are sampled or excluded, sampling rate percentages, and whether critical security logs are accidentally excluded"},
+            {"id": "query_history", "name": "Query History", "description": "Recent query activity and performance",
+             "pages": [{"label": "sf_query_history", "display": "Query History", "path": "/monitoring/queries"}],
+             "focus": "Review recent query activity — query count, execution times, error rates, warehouse usage, and any long-running or failed queries"},
+            {"id": "warehouse_activity", "name": "Warehouse Activity", "description": "Warehouse load and credit usage",
+             "pages": [{"label": "sf_warehouse_activity", "display": "Warehouse Activity", "path": "/monitoring/warehouses"}],
+             "focus": "Review warehouse activity — credit consumption, load patterns, auto-suspend utilization, and idle time"},
         ],
     },
-    "organization": {
-        "name": "Organization Settings",
-        "description": "Users, roles, teams, SSO, and account configuration",
+    "admin": {
+        "name": "Admin",
+        "description": "Account and cost management",
         "checks": [
-            {"id": "users", "name": "Users & Roles", "description": "User accounts and role assignments",
-             "pages": [{"label": "dd_users", "display": "Users", "url": "/organization-settings/users"}],
-             "focus": "List all users — their roles (Admin/Standard/Read-Only), status (active/pending/disabled), last login date, and users with Admin role who may not need it"},
-            {"id": "roles", "name": "Custom Roles", "description": "Permission sets and role definitions",
-             "pages": [{"label": "dd_roles", "display": "Roles", "url": "/organization-settings/roles"}],
-             "focus": "Review custom role definitions — permissions granted, number of users assigned, and roles with overly broad permissions like manage_all or dashboards_write"},
-            {"id": "teams", "name": "Teams", "description": "Team structure and membership",
-             "pages": [{"label": "dd_teams", "display": "Teams", "url": "/organization-settings/teams"}],
-             "focus": "Review team structure — team names, member counts, and whether teams are properly scoped for resource access control"},
-            {"id": "saml_sso", "name": "SSO & SAML Configuration", "description": "Single sign-on settings",
-             "pages": [{"label": "dd_saml", "display": "SSO / SAML", "url": "/organization-settings/sso"}],
-             "focus": "Review SSO configuration — SAML enablement, IdP provider, strict mode (prevent non-SSO login), and whether SSO is the only allowed login method"},
-            {"id": "service_accounts", "name": "Service Accounts", "description": "Non-human service account keys",
-             "pages": [{"label": "dd_svc_accts", "display": "Service Accounts", "url": "/organization-settings/service-accounts"}],
-             "focus": "List service accounts — their assigned roles, associated API keys, last activity, and service accounts with Admin or overly broad permissions"},
-            {"id": "oauth_apps", "name": "OAuth Applications", "description": "Third-party OAuth integrations",
-             "pages": [{"label": "dd_oauth", "display": "OAuth Apps", "url": "/organization-settings/oauth-applications"}],
-             "focus": "Review OAuth applications — connected apps, permissions granted, and whether any apps have broader access than required"},
-            {"id": "ip_allowlist", "name": "IP Allowlist", "description": "IP-based access restrictions",
-             "pages": [{"label": "dd_ip_allowlist", "display": "IP Allowlist", "url": "/organization-settings/ip-allowlist"}],
-             "focus": "Review IP allowlist configuration — whether it is enabled, allowed CIDR ranges, and whether the allowlist is narrow enough to prevent unauthorized access"},
-            {"id": "sensitive_settings", "name": "Data Access & Sharing", "description": "Data sharing and privacy controls",
-             "pages": [{"label": "dd_sharing", "display": "Data Sharing", "url": "/organization-settings/sensitive-data"}],
-             "focus": "Review data sharing settings — public dashboard sharing, sensitive data access controls, and whether external sharing is restricted appropriately"},
-        ],
-    },
-    "dashboards": {
-        "name": "Dashboards",
-        "description": "Dashboard inventory, sharing settings, and key metrics",
-        "checks": [
-            {"id": "dashboard_list", "name": "Dashboard List", "description": "All created dashboards",
-             "pages": [{"label": "dd_dashboards", "display": "Dashboards", "url": "/dashboard/lists"}],
-             "focus": "Review dashboard inventory — total count, public vs private dashboards, recently created/modified dashboards, and dashboards shared publicly without authentication"},
-            {"id": "home_dashboard", "name": "Home / Overview Dashboard", "description": "Main overview health dashboard",
-             "pages": [{"label": "dd_home", "display": "Home Dashboard", "url": "/"}],
-             "focus": "Review the home dashboard — infrastructure health summary, active monitors, recent events, and overall system health indicators"},
-            {"id": "integrations", "name": "Integrations", "description": "Installed third-party integrations",
-             "pages": [{"label": "dd_integrations", "display": "Integrations", "url": "/integrations"}],
-             "focus": "Review installed integrations — which cloud providers, services, and tools are connected, and identify integrations that may be unused or have overly broad permissions"},
-            {"id": "events", "name": "Event Stream", "description": "Infrastructure and application events",
-             "pages": [{"label": "dd_events", "display": "Events", "url": "/event/stream"}],
-             "focus": "Review the event stream — recent deployment events, configuration changes, alert state changes, and any unusual events from the past 24 hours"},
-            {"id": "notebook", "name": "Notebooks", "description": "Incident and analysis notebooks",
-             "pages": [{"label": "dd_notebooks", "display": "Notebooks", "url": "/notebook/list"}],
-             "focus": "Review notebooks — their names, sharing status (private/public/org), and notebooks that may contain sensitive data visible to all org members"},
-            {"id": "incidents", "name": "Incident Management", "description": "Active and recent incidents",
-             "pages": [{"label": "dd_incidents", "display": "Incidents", "url": "/incidents"}],
-             "focus": "Review incident list — active incidents, severity, duration, responders assigned, and resolved incidents to assess MTTD and MTTR trends"},
-            {"id": "metrics_explorer", "name": "Metrics Explorer", "description": "Custom metric inventory",
-             "pages": [{"label": "dd_metrics", "display": "Metrics Explorer", "url": "/metric/explorer"}],
-             "focus": "Review metrics — custom metric count vs plan limits, high-cardinality metrics, and metrics not queried recently that may be incurring unnecessary cost"},
-            {"id": "powerpack", "name": "Workflow Automation", "description": "Automated response workflows",
-             "pages": [{"label": "dd_workflows", "display": "Workflows", "url": "/workflow"}],
-             "focus": "Review automated workflows — trigger conditions, actions taken (create ticket, send alert, remediate), and workflows that run with elevated permissions"},
+            {"id": "cost_management", "name": "Cost Management", "description": "Credit usage and billing overview",
+             "pages": [{"label": "sf_cost_management", "display": "Cost Management", "path": "/admin/billing"}],
+             "focus": "Review cost management — credit consumption trends, warehouse-level spending, storage costs, and resource monitors configured"},
         ],
     },
 }
 
 
 # ═══════════════════════════════════════════════════════
-# Datadog Compliance Check
+# Snowflake Compliance Check
 # ═══════════════════════════════════════════════════════
 
-def check_datadog_service(email, password, service, check_id=None, site="datadoghq.com"):
-    """Log in to Datadog dashboard via Playwright and screenshot + AI-analyze the requested check."""
-    service_info = DATADOG_SERVICE_PAGES.get(service)
+def check_snowflake_service(account_url, username, password, service, check_id=None):
+    """Log into Snowflake via Playwright and capture screenshots for the requested service check."""
+    service_info = SNOWFLAKE_SERVICE_PAGES.get(service)
     if not service_info:
         return {
-            "provider": "datadog",
+            "provider": "snowflake",
             "service": service,
             "service_name": service,
             "error": f"Unknown service: {service}",
@@ -2424,7 +2836,7 @@ def check_datadog_service(email, password, service, check_id=None, site="datadog
 
     if check_info is None:
         return {
-            "provider": "datadog",
+            "provider": "snowflake",
             "service": service,
             "service_name": service_info["name"],
             "error": "No checks defined for this service",
@@ -2437,7 +2849,7 @@ def check_datadog_service(email, password, service, check_id=None, site="datadog
     focus = check_info.get("focus", "Provide a thorough analysis of everything visible on this page")
 
     results = {
-        "provider": "datadog",
+        "provider": "snowflake",
         "service": service,
         "service_name": service_info["name"],
         "service_description": service_info["description"],
@@ -2449,8 +2861,15 @@ def check_datadog_service(email, password, service, check_id=None, site="datadog
         "status": "completed",
     }
 
-    screenshots = _take_datadog_screenshots(email, password, pages, site=site)
+    screenshots = _take_snowflake_screenshots(account_url, username, password, pages)
     results["screenshots"] = screenshots
+
+    real_screenshots = [s for s in screenshots if not s["label"].startswith("debug_")]
+    if not real_screenshots:
+        results["status"] = "error"
+        results["error"] = "Snowflake login failed or timed out. Please verify your account URL, username, and password."
+        logger.warning("Snowflake: No screenshots captured — marking result as error")
+        return results
 
     for ss in screenshots:
         if ss["label"].startswith("debug_"):
@@ -2458,7 +2877,7 @@ def check_datadog_service(email, password, service, check_id=None, site="datadog
         if not os.path.exists(ss["path"]):
             continue
 
-        prompt = f"""You are a Datadog observability and security auditor reviewing the Datadog dashboard.
+        prompt = f"""You are a Snowflake cloud data platform auditor reviewing the Snowflake web console (Snowsight).
 
 This screenshot shows the "{service_info['name']} — {ss['description']}" page.
 
@@ -2466,7 +2885,7 @@ Your analysis focus for this check: {focus}
 
 Provide a thorough, comprehensive analysis of everything visible, guided by the focus above. Cover:
 1. What resources and configurations are shown
-2. Security and operational posture — both positive findings and potential risks
+2. Security posture — both positive findings and potential risks
 3. Key configuration details and settings visible
 4. Specific, actionable recommendations
 
@@ -2484,22 +2903,25 @@ Respond ONLY with this JSON (no markdown, no extra text):
             analysis = _analyze_screenshot_with_vision(ss["path"], prompt)
             results["vision_analysis"][ss["label"]] = analysis
         except Exception as e:
-            logger.error(f"Vision analysis failed for {ss['label']}: {e}")
+            logger.error(f"Snowflake vision analysis failed for {ss['label']}: {e}")
             results["vision_analysis"][ss["label"]] = {"error": str(e)}
 
     return results
 
 
-def _take_datadog_screenshots(email, password, pages, site="datadoghq.com"):
-    """Log in to Datadog via Playwright, then navigate and screenshot each page."""
+def _take_snowflake_screenshots(account_url, username, password, pages):
+    """Log into Snowflake Snowsight and capture screenshots."""
     screenshots = []
     try:
         from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeout
     except ImportError:
-        logger.warning("Playwright not available — cannot take Datadog screenshots")
+        logger.warning("Playwright not available — cannot take Snowflake screenshots")
         return screenshots
 
-    base_url = f"https://app.{site}"
+    account_url = account_url.strip().rstrip("/")
+    if not account_url.startswith("http"):
+        account_url = f"https://{account_url}"
+    base_url = account_url
 
     with sync_playwright() as pw:
         browser = pw.chromium.launch(
@@ -2513,141 +2935,475 @@ def _take_datadog_screenshots(email, password, pages, site="datadoghq.com"):
         page = context.new_page()
         _apply_stealth(page)
 
-        # ── Step 1: Navigate to Datadog login ─────────────────────────────────
+        # ── Step 1: Navigate to Snowflake login ──
         try:
-            page.goto(f"{base_url}/account/login", wait_until="commit", timeout=60000)
-            page.wait_for_timeout(2000)
+            page.goto(base_url, wait_until="commit", timeout=60000)
         except PlaywrightTimeout:
-            logger.error("Datadog: timed out loading login page")
+            logger.error("Snowflake: timed out loading login page")
             browser.close()
             return screenshots
 
+        # Wait for login form
         try:
-            raw = page.screenshot()
-            _save_screenshot(raw, "datadog", "debug_login_page")
-        except Exception:
-            pass
-
-        # ── Step 2: Fill email ─────────────────────────────────────────────────
-        email_filled = False
-        for selector in ['input[name="email"]', 'input[type="email"]', '#email', 'input[placeholder*="email" i]']:
-            try:
-                el = page.locator(selector)
-                if el.count() > 0:
-                    el.first.click()
-                    page.wait_for_timeout(300)
-                    el.first.type(email, delay=80)  # human-like typing
-                    email_filled = True
-                    logger.info("Datadog: email filled")
-                    break
-            except Exception:
-                continue
-
-        if not email_filled:
-            logger.error("Datadog: could not find email field")
-            browser.close()
-            return screenshots
-
-        page.wait_for_timeout(1000)
-
-        # ── Step 3: Click Next if email-first flow ─────────────────────────────
-        for btn_sel in ['button:has-text("Next")', 'button:has-text("Continue")', 'input[type="submit"]']:
-            try:
-                btn = page.locator(btn_sel)
-                if btn.count() > 0:
-                    btn.first.click()
-                    page.wait_for_timeout(2000)
-                    break
-            except Exception:
-                continue
-
-        # ── Step 4: Fill password ──────────────────────────────────────────────
-        password_filled = False
-        for selector in ['input[name="password"]', 'input[type="password"]', '#password']:
-            try:
-                el = page.locator(selector)
-                if el.count() > 0:
-                    el.first.click()
-                    page.wait_for_timeout(300)
-                    el.first.type(password, delay=80)  # human-like typing
-                    password_filled = True
-                    logger.info("Datadog: password filled")
-                    break
-            except Exception:
-                continue
-
-        if not password_filled:
-            logger.error("Datadog: could not find password field")
-            try:
-                raw = page.screenshot()
-                _save_screenshot(raw, "datadog", "debug_no_password_field")
-            except Exception:
-                pass
-            browser.close()
-            return screenshots
-
-        # ── Step 5: Submit login ───────────────────────────────────────────────
-        submitted = False
-        for selector in ['button[type="submit"]', 'button:has-text("Log in")', 'button:has-text("Sign in")', 'input[type="submit"]']:
-            try:
-                btn = page.locator(selector)
-                if btn.count() > 0:
-                    btn.first.click()
-                    submitted = True
-                    logger.info("Datadog: login submitted")
-                    break
-            except Exception:
-                continue
-
-        if not submitted:
-            page.keyboard.press("Enter")
-
-        # ── Step 6: Wait for dashboard ─────────────────────────────────────────
-        try:
-            page.wait_for_url(
-                lambda url: f"app.{site}" in url and "/account/login" not in url,
-                timeout=30000,
+            page.wait_for_selector(
+                'input[name="username"], input#username, input[type="text"]',
+                state="visible", timeout=30000
             )
-            page.wait_for_timeout(4000)
-            logger.info(f"Datadog: logged in, URL: {page.url}")
+            logger.info("Snowflake: login form rendered")
+            page.wait_for_timeout(1000)
         except PlaywrightTimeout:
-            logger.error("Datadog: timed out waiting for post-login redirect")
+            logger.error("Snowflake: login form never rendered")
             try:
-                raw = page.screenshot()
-                _save_screenshot(raw, "datadog", "debug_login_failed")
+                raw = page.screenshot(full_page=False)
+                file_id, filepath, filename = _save_screenshot(raw, "snowflake", "debug_login_not_rendered")
+                screenshots.append({"file_id": file_id, "path": filepath, "filename": filename,
+                                    "label": "debug_login_not_rendered", "description": "Login form did not render", "url": page.url})
             except Exception:
                 pass
             browser.close()
             return screenshots
 
-        # ── Step 7: Screenshot each page ──────────────────────────────────────
-        for page_info in pages:
-            label = page_info["label"]
-            display = page_info["display"]
-            url = base_url + page_info["url"]
+        # Fill username
+        for selector in ['input[name="username"]', 'input#username', 'input[autocomplete="username"]']:
+            try:
+                el = page.locator(selector)
+                if el.count() > 0 and el.first.is_visible():
+                    el.first.fill(username)
+                    logger.info(f"Snowflake: filled username via {selector}")
+                    break
+            except Exception:
+                continue
+
+        # Fill password
+        for selector in ['input[name="password"]', 'input#password', 'input[type="password"]']:
+            try:
+                el = page.locator(selector)
+                if el.count() > 0 and el.first.is_visible():
+                    el.first.fill(password)
+                    logger.info(f"Snowflake: filled password via {selector}")
+                    break
+            except Exception:
+                continue
+
+        # Click sign in
+        for selector in ['button[type="submit"]', 'button:has-text("Sign in")', 'button:has-text("Log In")']:
+            try:
+                el = page.locator(selector)
+                if el.count() > 0 and el.first.is_visible():
+                    el.first.click()
+                    logger.info(f"Snowflake: clicked login via {selector}")
+                    break
+            except Exception:
+                continue
+
+        # Wait for Snowsight to load — try multiple indicators
+        logged_in = False
+        try:
+            # First: wait for URL to change away from the login page
+            page.wait_for_url("**/app.snowflake.com/**", timeout=60000)
+            logged_in = True
+            logger.info(f"Snowflake: redirected to app.snowflake.com — URL: {page.url}")
+        except PlaywrightTimeout:
+            # Fallback: check if URL changed from the login page at all
+            if "app.snowflake.com" in page.url or "snowsight" in page.url:
+                logged_in = True
+                logger.info(f"Snowflake: detected app URL: {page.url}")
+
+        if logged_in:
+            # Wait for the SPA to render any navigation/content
+            page.wait_for_timeout(5000)
+            logger.info("Snowflake: logged in successfully")
+        else:
+            try:
+                raw = page.screenshot(full_page=False)
+                file_id, filepath, filename = _save_screenshot(raw, "snowflake", "debug_login_failed")
+                screenshots.append({"file_id": file_id, "path": filepath, "filename": filename,
+                                    "label": "debug_login_failed", "description": "Login timed out", "url": page.url})
+            except Exception:
+                pass
+            logger.error(f"Snowflake: login timed out — URL: {page.url}")
+            browser.close()
+            return screenshots
+
+        # Capture the post-login base URL (Snowflake redirects to app.snowflake.com/<org>/<account>)
+        post_login_url = page.url.rstrip("/")
+        # Strip any hash/fragment and trailing path segments like /worksheets
+        if "#" in post_login_url:
+            post_login_url = post_login_url.split("#")[0].rstrip("/")
+        # Remove known landing paths
+        for suffix in ["/worksheets", "/worksheet", "/dashboard", "/home"]:
+            if post_login_url.endswith(suffix):
+                post_login_url = post_login_url[:-len(suffix)].rstrip("/")
+                break
+        logger.info(f"Snowflake: post-login base URL: {post_login_url}")
+
+        # ── Step 2: Navigate to each page and screenshot ──
+        for page_def in pages:
+            label = page_def["label"]
+            display = page_def["display"]
+            target_url = post_login_url + page_def["path"]
 
             try:
-                page.goto(url, wait_until="commit", timeout=60000)
-                page.wait_for_timeout(4000)
+                page.goto(target_url, wait_until="commit", timeout=60000)
+                page.wait_for_timeout(3000)
 
-                screenshot_bytes = page.screenshot(full_page=False)
-                file_id, filepath, filename = _save_screenshot(screenshot_bytes, "datadog", label)
+                # Wait for Snowsight SPA content to finish loading:
+                # 1. Wait for skeleton loaders to disappear
+                # 2. Wait for spinners to disappear
+                # 3. Poll until no loading indicators remain (up to 30s)
+                for attempt in range(15):
+                    loading = page.locator('[class*="skeleton"], [class*="Skeleton"], [class*="loading"], [class*="spinner"], [role="progressbar"], svg[class*="spin"]')
+                    count = loading.count()
+                    if count == 0:
+                        logger.info(f"Snowflake: content loaded for {label} after {(attempt+1)*2}s")
+                        break
+                    page.wait_for_timeout(2000)
+                else:
+                    logger.warning(f"Snowflake: content still loading after 30s for {label}, capturing anyway")
+
+                page.wait_for_timeout(2000)  # final settle
+
+                raw = page.screenshot(full_page=False)
+                file_id, filepath, filename = _save_screenshot(raw, "snowflake", label)
                 screenshots.append({
                     "file_id": file_id,
                     "path": filepath,
                     "filename": filename,
                     "label": label,
                     "description": display,
-                    "url": url,
+                    "url": page.url,
                 })
-                logger.info(f"Datadog: captured {label}")
-            except Exception as e:
-                logger.error(f"Datadog: failed to capture {label}: {e}")
-                try:
-                    raw = page.screenshot()
-                    _save_screenshot(raw, "datadog", f"debug_{label}_error")
-                except Exception:
-                    pass
+                logger.info(f"Snowflake screenshot captured: {label}")
+            except PlaywrightTimeout:
+                logger.warning(f"Snowflake: timeout navigating to {label}")
+            except Exception as ex:
+                logger.warning(f"Snowflake: error capturing {label}: {ex}")
+
+        browser.close()
+
+    return screenshots
+
+
+# ═══════════════════════════════════════════════════════
+# SendGrid Service Registry
+# ═══════════════════════════════════════════════════════
+
+SENDGRID_SERVICE_PAGES = {
+    "api_keys": {
+        "name": "API Keys",
+        "description": "API key management and permissions",
+        "checks": [
+            {"id": "api_key_list", "name": "API Key Inventory", "description": "All API keys and their permissions",
+             "pages": [{"label": "sg_api_keys", "display": "API Keys", "path": "/settings/api_keys"}],
+             "focus": "List all API keys — name, permissions (Full Access, Restricted, Billing), creation date, and last used. Flag any full-access keys or unused keys"},
+        ],
+    },
+    "sender_auth": {
+        "name": "Sender Authentication",
+        "description": "Domain and email authentication",
+        "checks": [
+            {"id": "domain_auth", "name": "Domain Authentication", "description": "DNS records and domain verification status",
+             "pages": [{"label": "sg_sender_auth", "display": "Sender Authentication", "path": "/settings/sender_auth"}],
+             "focus": "Review authenticated domains — SPF, DKIM, and DMARC status. Identify any unauthenticated senders or pending verifications"},
+        ],
+    },
+    "teammates": {
+        "name": "Teammates",
+        "description": "Team member access and roles",
+        "checks": [
+            {"id": "teammate_list", "name": "Teammate Inventory", "description": "All team members and their access levels",
+             "pages": [{"label": "sg_teammates", "display": "Teammates", "path": "/settings/teammates"}],
+             "focus": "List all teammates — email, role (Admin, Developer, Analyst, etc.), invitation status, and 2FA status. Flag any inactive users or overly permissive roles"},
+        ],
+    },
+    "ip_access": {
+        "name": "IP Access Management",
+        "description": "IP allowlisting and access controls",
+        "checks": [
+            {"id": "ip_access_list", "name": "IP Access List", "description": "Allowed IPs for account access",
+             "pages": [{"label": "sg_ip_access", "display": "IP Access Management", "path": "/settings/access"}],
+             "focus": "Review IP access restrictions — allowed IP ranges, whether IP access management is enabled, and any overly broad CIDR blocks"},
+        ],
+    },
+    "two_factor": {
+        "name": "Two-Factor Auth",
+        "description": "Account-level 2FA enforcement",
+        "checks": [
+            {"id": "two_factor_status", "name": "2FA Status", "description": "Two-factor authentication settings",
+             "pages": [{"label": "sg_two_factor", "display": "Two-Factor Authentication", "path": "/settings/auth"}],
+             "focus": "Check if two-factor authentication is enforced for all teammates, and identify any accounts without 2FA enabled"},
+        ],
+    },
+    "email_activity": {
+        "name": "Email Activity",
+        "description": "Recent email sending activity",
+        "checks": [
+            {"id": "activity_feed", "name": "Activity Feed", "description": "Recent email events and delivery status",
+             "pages": [{"label": "sg_activity", "display": "Email Activity", "path": "/email_activity"}],
+             "focus": "Review recent email activity — delivery rates, bounces, blocks, spam reports, and any unusual sending patterns that might indicate compromise"},
+        ],
+    },
+}
+
+
+# ═══════════════════════════════════════════════════════
+# SendGrid Compliance Check
+# ═══════════════════════════════════════════════════════
+
+def check_sendgrid_service(username, password, service, check_id=None):
+    """Log into SendGrid via Playwright and capture screenshots for the requested service check."""
+    service_info = SENDGRID_SERVICE_PAGES.get(service)
+    if not service_info:
+        return {
+            "provider": "sendgrid",
+            "service": service,
+            "service_name": service,
+            "error": f"Unknown service: {service}",
+            "screenshots": [],
+            "vision_analysis": {},
+            "status": "error",
+        }
+
+    checks = service_info.get("checks", [])
+    check_info = None
+    if check_id:
+        for c in checks:
+            if c["id"] == check_id:
+                check_info = c
+                break
+    if check_info is None and checks:
+        check_info = checks[0]
+
+    if check_info is None:
+        return {
+            "provider": "sendgrid",
+            "service": service,
+            "service_name": service_info["name"],
+            "error": "No checks defined for this service",
+            "screenshots": [],
+            "vision_analysis": {},
+            "status": "error",
+        }
+
+    pages = check_info["pages"]
+    focus = check_info.get("focus", "Provide a thorough analysis of everything visible on this page")
+
+    results = {
+        "provider": "sendgrid",
+        "service": service,
+        "service_name": service_info["name"],
+        "service_description": service_info["description"],
+        "check": check_info["name"],
+        "check_description": check_info["description"],
+        "timestamp": datetime.utcnow().isoformat(),
+        "screenshots": [],
+        "vision_analysis": {},
+        "status": "completed",
+    }
+
+    screenshots = _take_sendgrid_screenshots(username, password, pages)
+    results["screenshots"] = screenshots
+
+    real_screenshots = [s for s in screenshots if not s["label"].startswith("debug_")]
+    if not real_screenshots:
+        results["status"] = "error"
+        results["error"] = "SendGrid login failed or timed out. Please verify your username and password."
+        logger.warning("SendGrid: No screenshots captured — marking result as error")
+        return results
+
+    for ss in screenshots:
+        if ss["label"].startswith("debug_"):
+            continue
+        if not os.path.exists(ss["path"]):
+            continue
+
+        prompt = f"""You are a SendGrid email platform security auditor reviewing the SendGrid web console.
+
+This screenshot shows the "{service_info['name']} — {ss['description']}" page.
+
+Your analysis focus for this check: {focus}
+
+Provide a thorough, comprehensive analysis of everything visible, guided by the focus above. Cover:
+1. What resources and configurations are shown
+2. Security posture — both positive findings and potential risks
+3. Key configuration details and settings visible
+4. Specific, actionable recommendations
+
+Respond ONLY with this JSON (no markdown, no extra text):
+{{
+    "page_summary": "One sentence describing what this page shows",
+    "resources_found": ["resource or item 1", "resource or item 2"],
+    "security_observations": ["observation 1 (positive or negative)"],
+    "configuration_details": ["key detail 1"],
+    "recommendations": ["actionable recommendation 1"],
+    "risk_level": "low|medium|high|critical|unknown",
+    "confidence": 0.90
+}}"""
+        try:
+            analysis = _analyze_screenshot_with_vision(ss["path"], prompt)
+            results["vision_analysis"][ss["label"]] = analysis
+        except Exception as e:
+            logger.error(f"SendGrid vision analysis failed for {ss['label']}: {e}")
+            results["vision_analysis"][ss["label"]] = {"error": str(e)}
+
+    return results
+
+
+def _take_sendgrid_screenshots(username, password, pages):
+    """Log into SendGrid and capture screenshots."""
+    screenshots = []
+    try:
+        from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeout
+    except ImportError:
+        logger.warning("Playwright not available — cannot take SendGrid screenshots")
+        return screenshots
+
+    with sync_playwright() as pw:
+        browser = pw.chromium.launch(
+            headless=True,
+            args=["--no-sandbox", "--disable-dev-shm-usage", "--disable-gpu"],
+        )
+        context = browser.new_context(
+            viewport={"width": 1440, "height": 900},
+            user_agent="Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+        )
+        page = context.new_page()
+        _apply_stealth(page)
+
+        # ── Step 1: Navigate to SendGrid login ──
+        try:
+            page.goto("https://app.sendgrid.com/login", wait_until="commit", timeout=60000)
+        except PlaywrightTimeout:
+            logger.error("SendGrid: timed out loading login page")
+            browser.close()
+            return screenshots
+
+        # Wait for login form
+        try:
+            page.wait_for_selector(
+                'input[name="username"], input#username, input[type="email"], input[placeholder*="email" i]',
+                state="visible", timeout=30000
+            )
+            logger.info("SendGrid: login form rendered")
+            page.wait_for_timeout(1000)
+        except PlaywrightTimeout:
+            logger.error("SendGrid: login form never rendered")
+            try:
+                raw = page.screenshot(full_page=False)
+                file_id, filepath, filename = _save_screenshot(raw, "sendgrid", "debug_login_not_rendered")
+                screenshots.append({"file_id": file_id, "path": filepath, "filename": filename,
+                                    "label": "debug_login_not_rendered", "description": "Login form did not render", "url": page.url})
+            except Exception:
+                pass
+            browser.close()
+            return screenshots
+
+        # Fill username/email
+        for selector in ['input[name="username"]', 'input#username', 'input[type="email"]', 'input[placeholder*="email" i]']:
+            try:
+                el = page.locator(selector)
+                if el.count() > 0 and el.first.is_visible():
+                    el.first.fill(username)
+                    logger.info(f"SendGrid: filled username via {selector}")
+                    break
+            except Exception:
+                continue
+
+        # Fill password
+        for selector in ['input[name="password"]', 'input#password', 'input[type="password"]']:
+            try:
+                el = page.locator(selector)
+                if el.count() > 0 and el.first.is_visible():
+                    el.first.fill(password)
+                    logger.info(f"SendGrid: filled password via {selector}")
+                    break
+            except Exception:
+                continue
+
+        # Click sign in
+        for selector in ['button[type="submit"]', 'button:has-text("Log In")', 'button:has-text("Sign In")', 'input[type="submit"]']:
+            try:
+                el = page.locator(selector)
+                if el.count() > 0 and el.first.is_visible():
+                    el.first.click()
+                    logger.info(f"SendGrid: clicked login via {selector}")
+                    break
+            except Exception:
+                continue
+
+        # Wait for post-login redirect
+        logged_in = False
+        try:
+            page.wait_for_url("**/app.sendgrid.com/**", timeout=60000)
+            # Make sure we're not still on the login page
+            if "/login" not in page.url:
+                logged_in = True
+                logger.info(f"SendGrid: logged in — URL: {page.url}")
+            else:
+                # Wait a bit more — might be redirecting
+                page.wait_for_timeout(5000)
+                if "/login" not in page.url:
+                    logged_in = True
+                    logger.info(f"SendGrid: logged in after extra wait — URL: {page.url}")
+        except PlaywrightTimeout:
+            if "app.sendgrid.com" in page.url and "/login" not in page.url:
+                logged_in = True
+                logger.info(f"SendGrid: detected logged-in URL: {page.url}")
+
+        if logged_in:
+            page.wait_for_timeout(3000)
+            logger.info("SendGrid: login successful")
+        else:
+            try:
+                raw = page.screenshot(full_page=False)
+                file_id, filepath, filename = _save_screenshot(raw, "sendgrid", "debug_login_failed")
+                screenshots.append({"file_id": file_id, "path": filepath, "filename": filename,
+                                    "label": "debug_login_failed", "description": "Login timed out", "url": page.url})
+            except Exception:
+                pass
+            logger.error(f"SendGrid: login timed out — URL: {page.url}")
+            browser.close()
+            return screenshots
+
+        # ── Step 2: Navigate to each page and screenshot ──
+        base_url = "https://app.sendgrid.com"
+        for page_def in pages:
+            label = page_def["label"]
+            display = page_def["display"]
+            target_url = base_url + page_def["path"]
+
+            try:
+                page.goto(target_url, wait_until="commit", timeout=60000)
+                page.wait_for_timeout(3000)
+
+                # Wait for content to load (poll for loading indicators)
+                for attempt in range(15):
+                    loading = page.locator('[class*="skeleton"], [class*="Skeleton"], [class*="loading"], [class*="spinner"], [role="progressbar"], svg[class*="spin"], [class*="Loader"]')
+                    count = loading.count()
+                    if count == 0:
+                        logger.info(f"SendGrid: content loaded for {label} after {(attempt+1)*2}s")
+                        break
+                    page.wait_for_timeout(2000)
+                else:
+                    logger.warning(f"SendGrid: content still loading after 30s for {label}, capturing anyway")
+
+                page.wait_for_timeout(2000)  # final settle
+
+                raw = page.screenshot(full_page=False)
+                file_id, filepath, filename = _save_screenshot(raw, "sendgrid", label)
+                screenshots.append({
+                    "file_id": file_id,
+                    "path": filepath,
+                    "filename": filename,
+                    "label": label,
+                    "description": display,
+                    "url": page.url,
+                })
+                logger.info(f"SendGrid screenshot captured: {label}")
+            except PlaywrightTimeout:
+                logger.warning(f"SendGrid: timeout navigating to {label}")
+            except Exception as ex:
+                logger.warning(f"SendGrid: error capturing {label}: {ex}")
 
         browser.close()
 
