@@ -12,9 +12,26 @@ from rag.models import init_db, AnalysisRecord, get_session
 from rag.knowledge_base import initialize_knowledge_base
 from utils.file_utils import save_uploaded_file, get_file_path, get_mime_type, is_image_file
 from agents.graph import run_analysis
+from agents.aws_realtime import (
+    AWS_REALTIME_SERVICE_CATALOG,
+    check_aws_realtime_posture,
+    list_aws_realtime_services,
+    validate_aws_credentials,
+)
+from agents.azure_realtime import (
+    AZURE_REALTIME_SERVICE_CATALOG,
+    check_azure_realtime_posture,
+    list_azure_realtime_services,
+    validate_azure_credentials,
+)
+from agents.gitlab_realtime import (
+    GITLAB_REALTIME_SERVICE_CATALOG,
+    check_gitlab_realtime_posture,
+    list_gitlab_realtime_services,
+    validate_gitlab_credentials,
+)
 from agents.cloud_compliance import (
-    check_aws_ebs_encryption, check_aws_service, AWS_SERVICE_PAGES,
-    check_azure_sql_encryption, check_azure_service, AZURE_SERVICE_PAGES, check_github_posture,
+    check_github_posture,
     check_snowflake_service, SNOWFLAKE_SERVICE_PAGES,
     check_sendgrid_service, SENDGRID_SERVICE_PAGES,
 )
@@ -48,67 +65,31 @@ GITHUB_SERVICE_CATALOG = [
 
 def _provider_service_catalog(provider):
     if provider == "aws":
-        return [{"id": svc_id, "name": info["name"], "description": info["description"]} for svc_id, info in AWS_SERVICE_PAGES.items()]
+        return list_aws_realtime_services()
     if provider == "azure":
-        return [{"id": svc_id, "name": info["name"], "description": info["description"]} for svc_id, info in AZURE_SERVICE_PAGES.items()]
+        return list_azure_realtime_services()
     if provider == "github":
         return GITHUB_SERVICE_CATALOG
+    if provider == "gitlab":
+        return list_gitlab_realtime_services()
     return []
 
 
 def _validate_aws_provider():
-    if not Config.COMPLIANCE_AWS_ACCESS_KEY or not Config.COMPLIANCE_AWS_SECRET_KEY:
-        return {"configured": False, "healthy": False, "message": "Missing AWS API credentials in .env"}
-
-    try:
-        import boto3
-        session = boto3.Session(
-            aws_access_key_id=Config.COMPLIANCE_AWS_ACCESS_KEY,
-            aws_secret_access_key=Config.COMPLIANCE_AWS_SECRET_KEY,
-            region_name=Config.COMPLIANCE_AWS_REGION,
-        )
-        identity = session.client("sts").get_caller_identity()
-        has_console = bool(
-            Config.COMPLIANCE_AWS_ACCOUNT_ID and Config.COMPLIANCE_AWS_IAM_USERNAME and Config.COMPLIANCE_AWS_IAM_PASSWORD
-        )
-        return {
-            "configured": True,
-            "healthy": has_console,
-            "message": "AWS credentials verified" if has_console else "AWS API verified, but console credentials are missing",
-            "details": {
-                "account": identity.get("Account"),
-                "arn": identity.get("Arn"),
-                "region": Config.COMPLIANCE_AWS_REGION,
-                "console_credentials_present": has_console,
-            },
-        }
-    except Exception as exc:
-        return {"configured": True, "healthy": False, "message": f"AWS validation failed: {exc}"}
+    return validate_aws_credentials(
+        Config.COMPLIANCE_AWS_ACCESS_KEY,
+        Config.COMPLIANCE_AWS_SECRET_KEY,
+        Config.COMPLIANCE_AWS_REGION,
+    )
 
 
 def _validate_azure_provider():
-    has_token = bool(Config.COMPLIANCE_AZURE_ACCESS_TOKEN)
-    has_sp = bool(Config.COMPLIANCE_AZURE_TENANT_ID and Config.COMPLIANCE_AZURE_CLIENT_ID and Config.COMPLIANCE_AZURE_CLIENT_SECRET)
-    if not has_token and not has_sp:
-        return {"configured": False, "healthy": False, "message": "Missing Azure credentials in .env"}
-
-    try:
-        result = check_azure_service(
-            Config.COMPLIANCE_AZURE_TENANT_ID,
-            Config.COMPLIANCE_AZURE_CLIENT_ID,
-            Config.COMPLIANCE_AZURE_CLIENT_SECRET,
-            "subscriptions",
-            access_token=Config.COMPLIANCE_AZURE_ACCESS_TOKEN or None,
-        )
-        healthy = result.get("status") != "error"
-        return {
-            "configured": True,
-            "healthy": healthy,
-            "message": "Azure credentials verified" if healthy else result.get("api_findings", {}).get("authentication", "Azure validation failed"),
-            "details": {"subscriptions": len(result.get("api_findings", {}).get("subscriptions", []))},
-        }
-    except Exception as exc:
-        return {"configured": True, "healthy": False, "message": f"Azure validation failed: {exc}"}
+    return validate_azure_credentials(
+        Config.COMPLIANCE_AZURE_TENANT_ID,
+        Config.COMPLIANCE_AZURE_CLIENT_ID,
+        Config.COMPLIANCE_AZURE_CLIENT_SECRET,
+        Config.COMPLIANCE_AZURE_ACCESS_TOKEN or "",
+    )
 
 
 def _validate_github_provider():
@@ -134,11 +115,19 @@ def _validate_github_provider():
         return {"configured": True, "healthy": False, "message": f"GitHub validation failed: {exc}"}
 
 
+def _validate_gitlab_provider():
+    return validate_gitlab_credentials(
+        Config.COMPLIANCE_GITLAB_TOKEN,
+        Config.COMPLIANCE_GITLAB_BASE_URL,
+    )
+
+
 def _provider_statuses():
     return {
         "aws": _validate_aws_provider(),
         "azure": _validate_azure_provider(),
         "github": _validate_github_provider(),
+        "gitlab": _validate_gitlab_provider(),
     }
 
 
@@ -342,17 +331,17 @@ def get_history():
 
 
 # ──────────────────────────────────────
-# Cloud Compliance Routes
+# Service Monitoring Routes
 # ──────────────────────────────────────
 
-@app.route("/api/compliance/providers/status", methods=["GET"])
-def compliance_provider_status():
+@app.route("/api/monitoring/providers/status", methods=["GET"])
+def monitoring_provider_status():
     """Return env-backed provider configuration and health."""
     return jsonify({"success": True, "providers": _provider_statuses()})
 
 
-@app.route("/api/compliance/services/<provider>", methods=["GET"])
-def compliance_services(provider):
+@app.route("/api/monitoring/services/<provider>", methods=["GET"])
+def monitoring_services(provider):
     """Return the service catalog for a configured provider."""
     services = _provider_service_catalog(provider)
     if not services:
@@ -360,9 +349,9 @@ def compliance_services(provider):
     return jsonify({"success": True, "services": services})
 
 
-@app.route("/api/compliance/analyze", methods=["POST"])
-def compliance_analyze():
-    """Analyze a provider service using credentials from environment configuration."""
+@app.route("/api/monitoring/analyze", methods=["POST"])
+def monitoring_analyze():
+    """Collect monitoring data for a provider service using environment-backed credentials."""
     data = request.get_json() or {}
     provider = data.get("provider")
     service = data.get("service")
@@ -376,26 +365,29 @@ def compliance_analyze():
 
     try:
         if provider == "aws":
-            if not (Config.COMPLIANCE_AWS_ACCOUNT_ID and Config.COMPLIANCE_AWS_IAM_USERNAME and Config.COMPLIANCE_AWS_IAM_PASSWORD):
-                return jsonify({"error": "AWS console credentials are required in .env for service screenshots and findings"}), 400
-            result = check_aws_service(
-                Config.COMPLIANCE_AWS_ACCOUNT_ID,
-                Config.COMPLIANCE_AWS_IAM_USERNAME,
-                Config.COMPLIANCE_AWS_IAM_PASSWORD,
+            result = check_aws_realtime_posture(
+                Config.COMPLIANCE_AWS_ACCESS_KEY,
+                Config.COMPLIANCE_AWS_SECRET_KEY,
                 Config.COMPLIANCE_AWS_REGION,
                 service,
             )
         elif provider == "azure":
-            result = check_azure_service(
+            result = check_azure_realtime_posture(
                 Config.COMPLIANCE_AZURE_TENANT_ID,
                 Config.COMPLIANCE_AZURE_CLIENT_ID,
                 Config.COMPLIANCE_AZURE_CLIENT_SECRET,
-                service,
-                access_token=Config.COMPLIANCE_AZURE_ACCESS_TOKEN or None,
+                access_token=Config.COMPLIANCE_AZURE_ACCESS_TOKEN or "",
+                selected_service=service,
             )
         elif provider == "github":
             result = check_github_posture(Config.COMPLIANCE_GITHUB_TOKEN)
             result["selected_service"] = service
+        elif provider == "gitlab":
+            result = check_gitlab_realtime_posture(
+                Config.COMPLIANCE_GITLAB_TOKEN,
+                Config.COMPLIANCE_GITLAB_BASE_URL,
+                selected_service=service,
+            )
         else:
             return jsonify({"error": f"Unsupported provider: {provider}"}), 400
 
@@ -407,66 +399,49 @@ def compliance_analyze():
 
         return jsonify({"success": True, "result": result})
     except Exception as exc:
-        logger.error(f"Unified compliance analyze error: {exc}")
+        logger.error(f"Unified monitoring analyze error: {exc}")
         return jsonify({"error": str(exc)}), 500
 
-@app.route("/api/compliance/aws/services", methods=["GET"])
+@app.route("/api/monitoring/aws/services", methods=["GET"])
 def aws_services_list():
     """Return the list of supported AWS services for the service selector."""
-    services = [
-        {"id": svc_id, "name": info["name"], "description": info["description"]}
-        for svc_id, info in AWS_SERVICE_PAGES.items()
-    ]
-    return jsonify({"success": True, "services": services})
+    return jsonify({"success": True, "services": list_aws_realtime_services()})
 
 
-@app.route("/api/compliance/aws/checks/<service_id>", methods=["GET"])
+@app.route("/api/monitoring/aws/checks/<service_id>", methods=["GET"])
 def aws_checks_list(service_id):
-    """Return the list of compliance checks for a given AWS service."""
-    service_info = AWS_SERVICE_PAGES.get(service_id)
+    """Return a single API-based monitor check for a given AWS integration."""
+    service_info = AWS_REALTIME_SERVICE_CATALOG.get(service_id)
     if not service_info:
         return jsonify({"error": f"Unknown service: {service_id}"}), 404
-    checks = [
-        {"id": c["id"], "name": c["name"], "description": c["description"]}
-        for c in service_info.get("checks", [])
-    ]
+    checks = [{
+        "id": "realtime_monitor",
+        "name": "Realtime Monitor",
+        "description": f"Live AWS API inventory and posture summary for {service_info['name']}",
+    }]
     return jsonify({"success": True, "checks": checks})
 
 
-@app.route("/api/compliance/aws", methods=["POST"])
-def aws_compliance():
-    """Run AWS compliance check. If 'service' is provided, scans that service generically.
-    Falls back to legacy EBS-only check when no service is specified."""
+@app.route("/api/monitoring/aws", methods=["POST"])
+def aws_monitoring():
+    """Run AWS realtime service monitoring using API credentials only."""
     data = request.get_json()
     if not data:
         return jsonify({"error": "Request body is required"}), 400
 
-    access_key = data.get("access_key")
-    secret_key = data.get("secret_key")
-    region = data.get("region", "us-east-1")
-    account_id = data.get("account_id")
-    iam_username = data.get("iam_username")
-    iam_password = data.get("iam_password")
-    service = data.get("service")  # new: generic service selector
-    check_id = data.get("check_id")  # specific check within the service
+    access_key = data.get("access_key") or Config.COMPLIANCE_AWS_ACCESS_KEY
+    secret_key = data.get("secret_key") or Config.COMPLIANCE_AWS_SECRET_KEY
+    region = data.get("region", Config.COMPLIANCE_AWS_REGION or "us-east-1")
+    service = data.get("service")
 
-    has_api_keys = access_key and secret_key
-    has_console_creds = account_id and iam_username and iam_password
-    if not has_api_keys and not has_console_creds:
-        return jsonify({"error": "Provide either (access_key + secret_key) or (account_id + iam_username + iam_password)"}), 400
+    if not access_key or not secret_key:
+        return jsonify({"error": "Provide AWS access key and secret key"}), 400
+    if not service:
+        return jsonify({"error": "service is required"}), 400
 
     try:
-        if service and has_console_creds:
-            logger.info(f"Starting AWS service scan: {service} / check: {check_id} (region: {region})")
-            result = check_aws_service(account_id, iam_username, iam_password, region, service, check_id=check_id)
-        else:
-            logger.info(f"Starting AWS EBS encryption compliance check (region: {region})")
-            result = check_aws_ebs_encryption(
-                access_key, secret_key, region,
-                account_id=account_id,
-                iam_username=iam_username,
-                iam_password=iam_password,
-            )
+        logger.info(f"Starting AWS realtime posture scan (selected service: {service}) (region: {region})")
+        result = check_aws_realtime_posture(access_key, secret_key, region, service)
 
         for ss in result.get("screenshots", []):
             ss["url_path"] = f"/api/screenshots/{ss['filename']}"
@@ -474,46 +449,56 @@ def aws_compliance():
                 del ss["path"]
 
         if result.get("status") == "error":
-            return jsonify({"success": False, "error": result.get("error", "Compliance check failed"), "result": result})
+            return jsonify({"success": False, "error": result.get("error", "Monitoring request failed"), "result": result})
 
         return jsonify({"success": True, "result": result})
     except Exception as e:
-        logger.error(f"AWS compliance check error: {e}")
+        logger.error(f"AWS monitoring error: {e}")
         return jsonify({"error": str(e)}), 500
 
 
-@app.route("/api/compliance/azure", methods=["POST"])
-def azure_compliance():
-    """Run Azure SQL Database & Data Warehouse encryption compliance check."""
+@app.route("/api/monitoring/azure", methods=["POST"])
+def azure_monitoring():
+    """Run Azure realtime service monitoring using an access token or service principal."""
     data = request.get_json()
     if not data:
         return jsonify({"error": "Request body is required"}), 400
 
-    tenant_id = data.get("tenant_id")
-    client_id = data.get("client_id")
-    client_secret = data.get("client_secret")
-    access_token = data.get("access_token")
+    tenant_id = data.get("tenant_id") or Config.COMPLIANCE_AZURE_TENANT_ID
+    client_id = data.get("client_id") or Config.COMPLIANCE_AZURE_CLIENT_ID
+    client_secret = data.get("client_secret") or Config.COMPLIANCE_AZURE_CLIENT_SECRET
+    access_token = data.get("access_token") or Config.COMPLIANCE_AZURE_ACCESS_TOKEN
+    service = data.get("service")
 
     if not access_token and (not tenant_id or not client_id or not client_secret):
         return jsonify({"error": "Either access_token or (tenant_id, client_id, client_secret) are required"}), 400
+    if not service:
+        return jsonify({"error": "service is required"}), 400
 
     try:
-        logger.info("Starting Azure SQL encryption compliance check")
-        result = check_azure_sql_encryption(tenant_id, client_id, client_secret, access_token=access_token)
+        logger.info(f"Starting Azure realtime posture scan (selected service: {service})")
+        result = check_azure_realtime_posture(
+            tenant_id,
+            client_id,
+            client_secret,
+            access_token=access_token or "",
+            selected_service=service,
+        )
 
         for ss in result.get("screenshots", []):
             ss["url_path"] = f"/api/screenshots/{ss['filename']}"
-            del ss["path"]
+            if "path" in ss:
+                del ss["path"]
 
         return jsonify({"success": True, "result": result})
     except Exception as e:
-        logger.error(f"Azure compliance check error: {e}")
+        logger.error(f"Azure monitoring error: {e}")
         return jsonify({"error": str(e)}), 500
 
 
-@app.route("/api/compliance/github", methods=["POST"])
-def github_compliance():
-    """Run GitHub posture compliance check."""
+@app.route("/api/monitoring/github", methods=["POST"])
+def github_monitoring():
+    """Run GitHub realtime service monitoring."""
     data = request.get_json()
     if not data:
         return jsonify({"error": "Request body is required"}), 400
@@ -523,7 +508,7 @@ def github_compliance():
         return jsonify({"error": "api_token is required"}), 400
 
     try:
-        logger.info("Starting GitHub posture compliance check")
+        logger.info("Starting GitHub monitoring run")
         result = check_github_posture(api_token)
 
         for ss in result.get("screenshots", []):
@@ -532,17 +517,40 @@ def github_compliance():
 
         return jsonify({"success": True, "result": result})
     except Exception as e:
-        logger.error(f"GitHub compliance check error: {e}")
+        logger.error(f"GitHub monitoring error: {e}")
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/monitoring/gitlab", methods=["POST"])
+def gitlab_monitoring():
+    """Run GitLab realtime service monitoring using an API token only."""
+    data = request.get_json() or {}
+
+    api_token = data.get("api_token") or Config.COMPLIANCE_GITLAB_TOKEN
+    base_url = data.get("base_url") or Config.COMPLIANCE_GITLAB_BASE_URL
+    service = data.get("service")
+
+    if not api_token:
+        return jsonify({"error": "api_token is required"}), 400
+    if not service:
+        return jsonify({"error": "service is required"}), 400
+
+    try:
+        logger.info(f"Starting GitLab realtime posture scan (selected service: {service})")
+        result = check_gitlab_realtime_posture(api_token, base_url, selected_service=service)
+        return jsonify({"success": True, "result": result})
+    except Exception as e:
+        logger.error(f"GitLab monitoring error: {e}")
         return jsonify({"error": str(e)}), 500
 
 
 
 
 # ──────────────────────────────────────
-# Snowflake Compliance Routes
+# Snowflake Monitoring Routes
 # ──────────────────────────────────────
 
-@app.route("/api/compliance/snowflake/services", methods=["GET"])
+@app.route("/api/monitoring/snowflake/services", methods=["GET"])
 def snowflake_services_list():
     """Return supported Snowflake services."""
     services = [
@@ -552,7 +560,7 @@ def snowflake_services_list():
     return jsonify({"success": True, "services": services})
 
 
-@app.route("/api/compliance/snowflake/checks/<service_id>", methods=["GET"])
+@app.route("/api/monitoring/snowflake/checks/<service_id>", methods=["GET"])
 def snowflake_checks_list(service_id):
     """Return checks for a given Snowflake service."""
     service_info = SNOWFLAKE_SERVICE_PAGES.get(service_id)
@@ -565,9 +573,9 @@ def snowflake_checks_list(service_id):
     return jsonify({"success": True, "checks": checks})
 
 
-@app.route("/api/compliance/snowflake", methods=["POST"])
-def snowflake_compliance():
-    """Run Snowflake compliance check via Playwright browser login."""
+@app.route("/api/monitoring/snowflake", methods=["POST"])
+def snowflake_monitoring():
+    """Run Snowflake monitoring via Playwright browser login."""
     data = request.get_json()
     if not data:
         return jsonify({"error": "Request body is required"}), 400
@@ -589,7 +597,7 @@ def snowflake_compliance():
     check_id = data.get("check_id")
 
     try:
-        logger.info(f"Starting Snowflake compliance check: service={service}, check={check_id}")
+        logger.info(f"Starting Snowflake monitoring run: service={service}, check={check_id}")
         result = check_snowflake_service(account_url, username, password, service, check_id=check_id)
 
         for ss in result.get("screenshots", []):
@@ -598,19 +606,19 @@ def snowflake_compliance():
                 del ss["path"]
 
         if result.get("status") == "error":
-            return jsonify({"success": False, "error": result.get("error", "Compliance check failed"), "result": result})
+            return jsonify({"success": False, "error": result.get("error", "Monitoring request failed"), "result": result})
 
         return jsonify({"success": True, "result": result})
     except Exception as e:
-        logger.error(f"Snowflake compliance check error: {e}")
+        logger.error(f"Snowflake monitoring error: {e}")
         return jsonify({"error": str(e)}), 500
 
 
 # ──────────────────────────────────────
-# SendGrid Compliance Routes
+# SendGrid Monitoring Routes
 # ──────────────────────────────────────
 
-@app.route("/api/compliance/sendgrid/services", methods=["GET"])
+@app.route("/api/monitoring/sendgrid/services", methods=["GET"])
 def sendgrid_services_list():
     """Return supported SendGrid services."""
     services = [
@@ -620,7 +628,7 @@ def sendgrid_services_list():
     return jsonify({"success": True, "services": services})
 
 
-@app.route("/api/compliance/sendgrid/checks/<service_id>", methods=["GET"])
+@app.route("/api/monitoring/sendgrid/checks/<service_id>", methods=["GET"])
 def sendgrid_checks_list(service_id):
     """Return checks for a given SendGrid service."""
     service_info = SENDGRID_SERVICE_PAGES.get(service_id)
@@ -633,9 +641,9 @@ def sendgrid_checks_list(service_id):
     return jsonify({"success": True, "checks": checks})
 
 
-@app.route("/api/compliance/sendgrid", methods=["POST"])
-def sendgrid_compliance():
-    """Run SendGrid compliance check via Playwright browser login."""
+@app.route("/api/monitoring/sendgrid", methods=["POST"])
+def sendgrid_monitoring():
+    """Run SendGrid monitoring via Playwright browser login."""
     data = request.get_json()
     if not data:
         return jsonify({"error": "Request body is required"}), 400
@@ -654,7 +662,7 @@ def sendgrid_compliance():
     check_id = data.get("check_id")
 
     try:
-        logger.info(f"Starting SendGrid compliance check: service={service}, check={check_id}")
+        logger.info(f"Starting SendGrid monitoring run: service={service}, check={check_id}")
         result = check_sendgrid_service(username, password, service, check_id=check_id)
 
         for ss in result.get("screenshots", []):
@@ -663,17 +671,17 @@ def sendgrid_compliance():
                 del ss["path"]
 
         if result.get("status") == "error":
-            return jsonify({"success": False, "error": result.get("error", "Compliance check failed"), "result": result})
+            return jsonify({"success": False, "error": result.get("error", "Monitoring request failed"), "result": result})
 
         return jsonify({"success": True, "result": result})
     except Exception as e:
-        logger.error(f"SendGrid compliance check error: {e}")
+        logger.error(f"SendGrid monitoring error: {e}")
         return jsonify({"error": str(e)}), 500
 
 
 @app.route("/api/screenshots/<filename>", methods=["GET"])
 def serve_screenshot(filename):
-    """Serve a compliance check screenshot."""
+    """Serve a monitoring screenshot."""
     from flask import send_from_directory
     screenshots_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "screenshots")
     return send_from_directory(screenshots_dir, filename)

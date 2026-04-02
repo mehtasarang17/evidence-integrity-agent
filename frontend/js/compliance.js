@@ -1,12 +1,14 @@
 /**
- * Cloud Compliance Module
- * Env-backed provider health, service navigation, and compliance dashboards.
+ * Service monitoring module.
+ * Env-backed provider health, service navigation, and monitoring dashboards.
  */
 const Compliance = (() => {
     let activeProvider = 'aws';
     let providerStatuses = {};
     let servicesByProvider = {};
     let selectedServiceByProvider = {};
+    let serviceSearchByProvider = {};
+    let visibleServiceCountByProvider = {};
     let activeDashboardKey = null;
     let providerResults = {};
 
@@ -17,7 +19,9 @@ const Compliance = (() => {
         aws: 'AWS',
         azure: 'Azure',
         github: 'GitHub',
+        gitlab: 'GitLab',
     };
+    const SERVICE_PAGE_SIZE = 10;
 
     function init() {
         _initLightbox();
@@ -27,6 +31,15 @@ const Compliance = (() => {
         });
         document.getElementById('btn-run-selected-service').addEventListener('click', runSelectedService);
         document.getElementById('btn-new-compliance').addEventListener('click', resetCompliance);
+        document.getElementById('cc-service-search').addEventListener('input', event => {
+            serviceSearchByProvider[activeProvider] = event.target.value || '';
+            visibleServiceCountByProvider[activeProvider] = SERVICE_PAGE_SIZE;
+            _renderServiceList(activeProvider);
+        });
+        document.getElementById('cc-service-more').addEventListener('click', () => {
+            visibleServiceCountByProvider[activeProvider] = (visibleServiceCountByProvider[activeProvider] || SERVICE_PAGE_SIZE) + SERVICE_PAGE_SIZE;
+            _renderServiceList(activeProvider);
+        });
 
         loadProviderStatuses().then(() => {
             switchProvider(activeProvider);
@@ -35,14 +48,14 @@ const Compliance = (() => {
 
     async function loadProviderStatuses() {
         try {
-            const response = await fetch('/api/compliance/providers/status');
+            const response = await fetch('/api/monitoring/providers/status');
             const data = await response.json();
-            if (!data.success) throw new Error(data.error || 'Failed to load provider statuses');
+            if (!data.success) throw new Error(data.error || 'Failed to load provider connections');
             providerStatuses = data.providers || {};
             _renderProviderStatuses();
         } catch (err) {
             console.error('Provider status load failed:', err);
-            App.showToast('Failed to load provider statuses', 'error');
+            App.showToast('Failed to load provider connections', 'error');
         }
     }
 
@@ -70,14 +83,33 @@ const Compliance = (() => {
         if (!servicesByProvider[provider]) {
             await _loadServices(provider);
         } else {
+            _syncServiceSearchInput(provider);
             _renderServiceList(provider);
         }
 
         if (provider === 'github') {
             if (providerResults.github) {
                 _renderCachedGithubResult();
-            } else if (providerStatuses.github?.healthy) {
-                runSelectedService({ auto: true });
+            } else {
+                document.getElementById('compliance-results').style.display = 'none';
+            }
+        } else if (provider === 'aws') {
+            if (providerResults.aws) {
+                _renderCachedAwsResult();
+            } else {
+                document.getElementById('compliance-results').style.display = 'none';
+            }
+        } else if (provider === 'azure') {
+            if (providerResults.azure) {
+                _renderCachedAzureResult();
+            } else {
+                document.getElementById('compliance-results').style.display = 'none';
+            }
+        } else if (provider === 'gitlab') {
+            if (providerResults.gitlab) {
+                _renderCachedGitlabResult();
+            } else {
+                document.getElementById('compliance-results').style.display = 'none';
             }
         } else {
             document.getElementById('compliance-results').style.display = providerResults[provider] ? 'block' : 'none';
@@ -86,10 +118,10 @@ const Compliance = (() => {
 
     function _renderProviderHero() {
         const status = providerStatuses[activeProvider] || {};
-        document.getElementById('cc-provider-eyebrow').textContent = status.healthy ? 'Credentials Verified' : 'Provider Attention Needed';
+        document.getElementById('cc-provider-eyebrow').textContent = status.healthy ? 'Connection Verified' : 'Provider Attention Needed';
         document.getElementById('cc-provider-title').textContent = PROVIDER_LABELS[activeProvider] || activeProvider;
         document.getElementById('cc-provider-description').textContent =
-            `Service inventory for ${PROVIDER_LABELS[activeProvider] || activeProvider}. Select a service to inspect the configured environment.`;
+            `Connected ${PROVIDER_LABELS[activeProvider] || activeProvider} environment. Choose a service to inspect its live activity, inventory, and current operating state.`;
 
         const banner = document.getElementById('cc-provider-health-banner');
         banner.className = `cc-service-stage__meta ${status.healthy ? 'cc-service-stage__meta--healthy' : 'cc-service-stage__meta--unhealthy'}`;
@@ -98,13 +130,20 @@ const Compliance = (() => {
 
     async function _loadServices(provider) {
         try {
-            const response = await fetch(`/api/compliance/services/${provider}`);
+            const response = await fetch(`/api/monitoring/services/${provider}`);
             const data = await response.json();
             if (!data.success) throw new Error(data.error || 'Failed to load services');
             servicesByProvider[provider] = data.services || [];
+            if (typeof serviceSearchByProvider[provider] !== 'string') {
+                serviceSearchByProvider[provider] = '';
+            }
+            if (!visibleServiceCountByProvider[provider]) {
+                visibleServiceCountByProvider[provider] = SERVICE_PAGE_SIZE;
+            }
             if (!selectedServiceByProvider[provider] && servicesByProvider[provider].length) {
                 selectedServiceByProvider[provider] = servicesByProvider[provider][0].id;
             }
+            _syncServiceSearchInput(provider);
             _renderServiceList(provider);
         } catch (err) {
             console.error('Service load failed:', err);
@@ -112,12 +151,26 @@ const Compliance = (() => {
         }
     }
 
+    function _syncServiceSearchInput(provider) {
+        const searchInput = document.getElementById('cc-service-search');
+        if (searchInput) {
+            searchInput.value = serviceSearchByProvider[provider] || '';
+        }
+    }
+
     function _renderServiceList(provider) {
         const wrap = document.getElementById('cc-service-list');
+        const moreButton = document.getElementById('cc-service-more');
         const services = servicesByProvider[provider] || [];
+        const searchTerm = (serviceSearchByProvider[provider] || '').trim().toLowerCase();
+        const filteredServices = searchTerm
+            ? services.filter(service => (service.name || '').toLowerCase().includes(searchTerm))
+            : services;
+        const visibleCount = visibleServiceCountByProvider[provider] || SERVICE_PAGE_SIZE;
+        const visibleServices = filteredServices.slice(0, visibleCount);
         wrap.innerHTML = '';
 
-        services.forEach(service => {
+        visibleServices.forEach(service => {
             const item = document.createElement('button');
             item.type = 'button';
             item.className = 'cc-service-item';
@@ -131,6 +184,16 @@ const Compliance = (() => {
             wrap.appendChild(item);
         });
 
+        if (!visibleServices.length) {
+            wrap.innerHTML = '<p class="cc-service-list__empty">No services match your search.</p>';
+        }
+
+        if (moreButton) {
+            const remaining = filteredServices.length - visibleServices.length;
+            moreButton.hidden = remaining <= 0;
+            moreButton.textContent = remaining > 0 ? `Show more (${remaining} left)` : 'Show more';
+        }
+
         _renderSelectedServiceState();
     }
 
@@ -140,6 +203,15 @@ const Compliance = (() => {
         if (activeProvider === 'github' && providerResults.github) {
             _renderCachedGithubResult();
         }
+        if (activeProvider === 'aws' && providerResults.aws) {
+            _renderCachedAwsResult();
+        }
+        if (activeProvider === 'azure' && providerResults.azure) {
+            _renderCachedAzureResult();
+        }
+        if (activeProvider === 'gitlab' && providerResults.gitlab) {
+            _renderCachedGitlabResult();
+        }
     }
 
     function _renderSelectedServiceState() {
@@ -148,7 +220,7 @@ const Compliance = (() => {
         document.getElementById('cc-selected-service-title').textContent = service ? service.name : 'Select a service';
         document.getElementById('cc-selected-service-desc').textContent = service
             ? service.description
-            : 'Choose a provider service from the left rail to inspect the configured environment.';
+            : 'Choose a provider service to inspect the configured environment.';
 
         const providerHealthy = providerStatuses[activeProvider]?.healthy;
         document.getElementById('btn-run-selected-service').disabled = !(service && providerHealthy);
@@ -158,13 +230,13 @@ const Compliance = (() => {
         const service = selectedServiceByProvider[activeProvider];
         if (!service) return;
 
-        _showProcessing(`${PROVIDER_LABELS[activeProvider]} — ${service.replace(/_/g, ' ')}`);
+        _showProcessing(PROVIDER_LABELS[activeProvider] || activeProvider, service);
         const progressPromise = _simulateProgress();
         const controller = new AbortController();
         const fetchTimeout = setTimeout(() => controller.abort(), 300000);
 
         try {
-            const response = await fetch('/api/compliance/analyze', {
+            const response = await fetch('/api/monitoring/analyze', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ provider: activeProvider, service }),
@@ -182,25 +254,26 @@ const Compliance = (() => {
                 providerResults[activeProvider] = data.result;
                 _showResults(data.result, activeProvider);
             } else {
-                if (!options.auto) App.showToast(data.error || 'Compliance analysis failed', 'error');
-                _showInlineError(data.error || 'Compliance analysis failed');
+                if (!options.auto) App.showToast(data.error || 'Service monitoring failed', 'error');
+                _showInlineError(data.error || 'Service monitoring failed');
             }
         } catch (err) {
             clearTimeout(fetchTimeout);
             _stopElapsedTimer();
-            const msg = err.name === 'AbortError' ? 'Compliance check timed out.' : 'Failed to connect to server';
+            const msg = err.name === 'AbortError' ? 'Service monitoring timed out.' : 'Failed to connect to server';
             if (!options.auto) App.showToast(msg, 'error');
             _showInlineError(msg);
         }
     }
 
-    function _showProcessing(providerName) {
+    function _showProcessing(providerLabel, serviceId) {
         document.getElementById('cc-tabs').style.pointerEvents = 'none';
         document.getElementById('cc-tabs').style.opacity = '0.5';
         document.getElementById('compliance-results').style.display = 'none';
         const processing = document.getElementById('compliance-processing');
         processing.style.display = 'block';
-        document.getElementById('compliance-provider-name').textContent = providerName;
+        document.getElementById('compliance-processing-title').textContent = `${providerLabel} Analysis`;
+        document.getElementById('compliance-provider-name').textContent = `${providerLabel} Services`;
         document.getElementById('cc-processing-bar-fill').style.width = '8%';
         document.querySelectorAll('.cc-step').forEach(step => step.setAttribute('data-status', 'waiting'));
     }
@@ -212,19 +285,15 @@ const Compliance = (() => {
 
     async function _simulateProgress() {
         _updateStep('step-auth', 'processing');
-        _setProcessingBar(18);
+        _setProcessingBar(24);
         await _delay(800);
         _updateStep('step-auth', 'completed');
         _updateStep('step-api', 'processing');
-        _setProcessingBar(42);
+        _setProcessingBar(58);
         await _delay(1500);
         _updateStep('step-api', 'completed');
-        _updateStep('step-screenshot', 'processing');
-        _setProcessingBar(68);
-        await _delay(2000);
-        _updateStep('step-screenshot', 'completed');
         _updateStep('step-analysis', 'processing');
-        _setProcessingBar(86);
+        _setProcessingBar(82);
         _startElapsedTimer();
     }
 
@@ -260,18 +329,72 @@ const Compliance = (() => {
 
         const providerLabel = PROVIDER_LABELS[provider] || provider;
         const serviceLabel = result.service_name || result.check || result.selected_service || 'Service';
-        document.getElementById('compliance-results-title').textContent = `${providerLabel} ${serviceLabel} — Analysis Report`;
+        document.getElementById('compliance-results-title').textContent = `${providerLabel} ${serviceLabel} — Monitoring Report`;
 
         _renderStatusBanner(result, provider);
         _renderUnifiedDashboard(result, provider);
-        _renderScreenshots(result.screenshots || []);
-        _renderApiFindings(result.api_findings || {}, provider);
-        _renderVisionAnalysis(result.vision_analysis || {}, result.service_name);
     }
 
     function _renderCachedGithubResult() {
         const result = { ...providerResults.github, selected_service: selectedServiceByProvider.github };
         _showResults(result, 'github');
+    }
+
+    function _renderCachedAwsResult() {
+        const cache = providerResults.aws;
+        if (!cache?.services) return;
+        const serviceKey = selectedServiceByProvider.aws && cache.services[selectedServiceByProvider.aws]
+            ? selectedServiceByProvider.aws
+            : cache.selected_service || Object.keys(cache.services)[0];
+        if (!serviceKey || !cache.services[serviceKey]) return;
+
+        selectedServiceByProvider.aws = serviceKey;
+        const selected = cache.services[serviceKey].metadata || {};
+        _showResults({
+            ...selected,
+            selected_service: serviceKey,
+            aws_summary: cache.aws_summary,
+            aws_services: cache.services,
+            check: cache.check,
+        }, 'aws');
+    }
+
+    function _renderCachedAzureResult() {
+        const cache = providerResults.azure;
+        if (!cache?.services) return;
+        const serviceKey = selectedServiceByProvider.azure && cache.services[selectedServiceByProvider.azure]
+            ? selectedServiceByProvider.azure
+            : cache.selected_service || Object.keys(cache.services)[0];
+        if (!serviceKey || !cache.services[serviceKey]) return;
+
+        selectedServiceByProvider.azure = serviceKey;
+        const selected = cache.services[serviceKey].metadata || {};
+        _showResults({
+            ...selected,
+            selected_service: serviceKey,
+            azure_summary: cache.azure_summary,
+            azure_services: cache.services,
+            check: cache.check,
+        }, 'azure');
+    }
+
+    function _renderCachedGitlabResult() {
+        const cache = providerResults.gitlab;
+        if (!cache?.services) return;
+        const serviceKey = selectedServiceByProvider.gitlab && cache.services[selectedServiceByProvider.gitlab]
+            ? selectedServiceByProvider.gitlab
+            : cache.selected_service || Object.keys(cache.services)[0];
+        if (!serviceKey || !cache.services[serviceKey]) return;
+
+        selectedServiceByProvider.gitlab = serviceKey;
+        const selected = cache.services[serviceKey].metadata || {};
+        _showResults({
+            ...selected,
+            selected_service: serviceKey,
+            gitlab_summary: cache.gitlab_summary,
+            gitlab_services: cache.services,
+            check: cache.check,
+        }, 'gitlab');
     }
 
     function _showInlineError(message) {
@@ -296,12 +419,12 @@ const Compliance = (() => {
 
         if (provider === 'github') {
             const summary = result.github_summary || {};
-            const status = summary.overall_status || 'unknown';
+            const status = summary.overall_status === 'fail' ? 'fail' : 'info';
             banner.className = `cc-status-banner ${_statusToBannerClass(status)}`;
             icon.textContent = _statusToSymbol(status);
-            text.textContent = `GitHub posture score: ${summary.score ?? '--'}`;
+            text.textContent = 'GitHub monitoring summary';
             const counts = summary.status_counts || {};
-            desc.textContent = `${counts.pass || 0} passed, ${counts.warn || 0} warnings, ${counts.fail || 0} failures, ${counts.unknown || 0} unknown.`;
+            desc.textContent = `${counts.pass || 0} healthy, ${counts.fail || 0} blocked, ${counts.unknown || 0} unknown across ${Object.keys(result.services || {}).length || 0} services.`;
             return;
         }
 
@@ -311,12 +434,12 @@ const Compliance = (() => {
                 ? 'pass'
                 : result.encryption_enabled === false
                     ? 'fail'
-                    : 'warn';
+                    : 'info';
 
         banner.className = `cc-status-banner ${_statusToBannerClass(genericStatus)}`;
         icon.textContent = _statusToSymbol(genericStatus);
-        text.textContent = `${PROVIDER_LABELS[provider]} ${result.service_name || result.check || 'Service'} — ${genericStatus.toUpperCase()}`;
-        desc.textContent = result.error || result.check_description || 'Review the findings and metadata below for the current service.';
+        text.textContent = `${PROVIDER_LABELS[provider]} ${result.service_name || result.check || 'Service'} monitor`;
+        desc.textContent = result.error || result.check_description || 'Review the live findings and metadata below for the current service.';
     }
 
     function _renderUnifiedDashboard(result, provider) {
@@ -333,66 +456,36 @@ const Compliance = (() => {
 
     function _renderGenericDashboard(result, provider) {
         const model = _buildGenericServiceModel(result, provider);
-        document.querySelector('.github-dashboard-kicker').textContent = `${PROVIDER_LABELS[provider]} Service Overview`;
-        document.querySelector('.github-dashboard-title').textContent = `${result.service_name || result.check || 'Service'} posture`;
-        document.getElementById('github-dashboard-copy').textContent = model.copy;
-        document.getElementById('github-score-value').textContent = model.score;
-        document.getElementById('github-passed-count').textContent = model.counts.pass;
-        document.getElementById('github-warn-count').textContent = model.counts.warn;
-        document.getElementById('github-fail-count').textContent = model.counts.fail;
-        document.getElementById('github-unknown-count').textContent = model.counts.unknown;
-
-        const cardsWrap = document.getElementById('github-service-cards');
-        const barsWrap = document.getElementById('github-bargraph');
-        const tabsWrap = document.getElementById('github-metadata-tabs');
-        cardsWrap.innerHTML = '';
-        barsWrap.innerHTML = '';
-        tabsWrap.innerHTML = '';
-
-        model.entries.forEach(entry => {
-            const cardEl = document.createElement('button');
-            cardEl.type = 'button';
-            cardEl.dataset.serviceKey = entry.key;
-            cardEl.className = `github-service-card github-service-card--${entry.status}`;
-            cardEl.innerHTML = `
-                <div class="github-service-card__top">
-                    <span class="github-service-card__name">${entry.name}</span>
-                    <span class="github-service-card__badge">${entry.status.toUpperCase()}</span>
-                </div>
-                <div class="github-service-card__score">${entry.score}</div>
-                <p class="github-service-card__summary">${entry.summary}</p>
-                <div class="github-service-card__metrics">${entry.metrics || 'Review metadata for full detail.'}</div>
-            `;
-            cardEl.addEventListener('click', () => _selectDashboardEntry(entry.key, model));
-            cardsWrap.appendChild(cardEl);
-
-            const bar = document.createElement('div');
-            bar.className = 'github-bar';
-            bar.innerHTML = `
-                <div class="github-bar__label">
-                    <span>${entry.name}</span>
-                    <strong>${entry.score}</strong>
-                </div>
-                <div class="github-bar__track">
-                    <div class="github-bar__fill github-bar__fill--${entry.status}" style="width:${entry.score}%"></div>
-                </div>
-            `;
-            barsWrap.appendChild(bar);
-
-            const tab = document.createElement('button');
-            tab.type = 'button';
-            tab.className = 'github-metadata-tab';
-            tab.dataset.serviceKey = entry.key;
-            tab.textContent = entry.name;
-            tab.addEventListener('click', () => _selectDashboardEntry(entry.key, model));
-            tabsWrap.appendChild(tab);
-        });
-
-        _selectDashboardEntry(model.entries[0]?.key, model);
+        document.querySelector('.github-dashboard-kicker').textContent = `${PROVIDER_LABELS[provider]} Service Monitor`;
+        const providerSummary = provider === 'aws'
+            ? result.aws_summary || {}
+            : provider === 'azure'
+                ? result.azure_summary || {}
+                : provider === 'gitlab'
+                    ? result.gitlab_summary || {}
+                : null;
+        document.querySelector('.github-dashboard-title').textContent = (provider === 'aws' || provider === 'azure' || provider === 'gitlab')
+            ? `Realtime monitoring across ${PROVIDER_LABELS[provider]} integrations`
+            : `${result.service_name || result.check || 'Service'} monitor`;
+        document.getElementById('github-dashboard-copy').textContent = (provider === 'aws' || provider === 'azure' || provider === 'gitlab')
+            ? `One cached ${PROVIDER_LABELS[provider]} monitoring run is used to inspect ${providerSummary.service_count || Object.keys(result[`${provider}_services`] || {}).length || 0} integrations without re-running collection when the service changes.`
+            : model.copy;
+        _updateMetadataHeading(provider, result.service_name || 'selected service');
+        _renderRealtimeGraph(provider, result);
+        document.getElementById('github-findings-subtitle').textContent = `Detailed findings for ${result.service_name || 'the selected service'}.`;
+        document.getElementById('github-metadata-json').textContent = JSON.stringify(result || {}, null, 2);
+        document.getElementById('github-findings-list').innerHTML = model.entries[0]?.findingsHtml || '<p class="empty-state">No findings available.</p>';
     }
 
     function _buildGenericServiceModel(result, provider) {
         const entries = [];
+        const overviewFindings = provider === 'aws'
+            ? _renderAwsDetailedFindings(result.api_findings || {}, result)
+            : provider === 'azure'
+                ? _renderAzureDetailedFindings(result.api_findings || {}, result)
+                : provider === 'gitlab'
+                    ? _renderGitlabDetailedFindings(result.api_findings || {}, result)
+                : _renderGenericFindings(result.api_findings || {});
         entries.push({
             key: 'overview',
             name: 'API Overview',
@@ -401,7 +494,7 @@ const Compliance = (() => {
             summary: result.error || result.check_description || 'Provider API response and captured service metadata.',
             metrics: `${Object.keys(result.api_findings || {}).length} API sections`,
             metadata: result.api_findings || {},
-            findingsHtml: _renderGenericFindings(result.api_findings || {}),
+            findingsHtml: overviewFindings,
         });
 
         Object.entries(result.vision_analysis || {}).forEach(([label, analysis]) => {
@@ -419,101 +512,45 @@ const Compliance = (() => {
             });
         });
 
-        const counts = _countStatuses(entries);
-        const score = Math.round(entries.reduce((sum, entry) => sum + entry.score, 0) / Math.max(entries.length, 1));
         return {
-            score,
-            counts,
-            copy: `Score, findings, and metadata for the selected ${PROVIDER_LABELS[provider]} service.`,
+            counts: _countStatuses(entries),
+            copy: `Live findings and metadata for the selected ${PROVIDER_LABELS[provider]} service.`,
             entries,
         };
     }
 
     function _renderGithubDashboard(result) {
         const services = result.services || {};
-        const summary = result.github_summary || {};
-        const counts = summary.status_counts || {};
-        const serviceEntries = Object.entries(services);
 
-        document.querySelector('.github-dashboard-kicker').textContent = 'GitHub Service Overview';
-        document.querySelector('.github-dashboard-title').textContent = 'Security posture across five GitHub surfaces';
+        document.querySelector('.github-dashboard-kicker').textContent = 'GitHub Service Monitor';
+        document.querySelector('.github-dashboard-title').textContent = 'Live monitoring across GitHub services';
         document.getElementById('github-dashboard-copy').textContent =
-            `A visual summary modeled around service status, backlog, and security coverage for ${serviceEntries.length} GitHub surfaces.`;
-        document.getElementById('github-score-value').textContent = summary.score ?? '--';
-        document.getElementById('github-passed-count').textContent = counts.pass || 0;
-        document.getElementById('github-warn-count').textContent = counts.warn || 0;
-        document.getElementById('github-fail-count').textContent = counts.fail || 0;
-        document.getElementById('github-unknown-count').textContent = counts.unknown || 0;
-
-        const cardsWrap = document.getElementById('github-service-cards');
-        const barsWrap = document.getElementById('github-bargraph');
-        const tabsWrap = document.getElementById('github-metadata-tabs');
-        cardsWrap.innerHTML = '';
-        barsWrap.innerHTML = '';
-        tabsWrap.innerHTML = '';
-
-        serviceEntries.forEach(([key, service]) => {
-            const cardEl = document.createElement('button');
-            cardEl.type = 'button';
-            cardEl.className = `github-service-card github-service-card--${service.status}`;
-            cardEl.dataset.serviceKey = key;
-            cardEl.innerHTML = `
-                <div class="github-service-card__top">
-                    <span class="github-service-card__name">${service.name}</span>
-                    <span class="github-service-card__badge">${service.status.toUpperCase()}</span>
-                </div>
-                <div class="github-service-card__score">${service.score}</div>
-                <p class="github-service-card__summary">${service.summary}</p>
-                <div class="github-service-card__metrics">${_formatGithubMetrics(service.metrics)}</div>
-            `;
-            cardEl.addEventListener('click', () => _selectDashboardEntry(key, { type: 'github', services }));
-            cardsWrap.appendChild(cardEl);
-
-            const bar = document.createElement('div');
-            bar.className = 'github-bar';
-            bar.innerHTML = `
-                <div class="github-bar__label">
-                    <span>${service.name}</span>
-                    <strong>${service.score}</strong>
-                </div>
-                <div class="github-bar__track">
-                    <div class="github-bar__fill github-bar__fill--${service.status}" style="width:${service.score}%"></div>
-                </div>
-            `;
-            barsWrap.appendChild(bar);
-
-            const tab = document.createElement('button');
-            tab.type = 'button';
-            tab.className = 'github-metadata-tab';
-            tab.dataset.serviceKey = key;
-            tab.textContent = service.name;
-            tab.addEventListener('click', () => _selectDashboardEntry(key, { type: 'github', services }));
-            tabsWrap.appendChild(tab);
-        });
+            `A visual summary of service activity, backlog, and repository operations across ${Object.keys(services).length} GitHub surfaces.`;
 
         const defaultKey = result.selected_service && services[result.selected_service]
             ? result.selected_service
-            : serviceEntries[0]?.[0];
+            : Object.entries(services)[0]?.[0];
         _selectDashboardEntry(defaultKey, { type: 'github', services });
     }
 
     function _selectDashboardEntry(entryKey, model) {
         activeDashboardKey = entryKey;
-        document.querySelectorAll('.github-metadata-tab').forEach(tab => {
-            tab.classList.toggle('github-metadata-tab--active', tab.dataset.serviceKey === entryKey);
-        });
-        document.querySelectorAll('.github-service-card').forEach(card => {
-            card.classList.toggle('github-service-card--active', card.dataset.serviceKey === entryKey);
-        });
 
         if (model.type === 'github') {
+            selectedServiceByProvider.github = entryKey;
             const service = model.services[entryKey] || {};
+            _updateMetadataHeading('github', service.name || 'selected service');
+            _renderRealtimeGraph('github', service.metadata || {}, service);
+            document.getElementById('github-findings-subtitle').textContent = `Inventory view for ${service.name || 'the selected GitHub service'}.`;
             document.getElementById('github-metadata-json').textContent = JSON.stringify(service.metadata || {}, null, 2);
             _renderGithubServiceFindings(entryKey, service);
             return;
         }
 
         const entry = (model.entries || []).find(item => item.key === entryKey) || model.entries?.[0];
+        _updateMetadataHeading(activeProvider, entry?.name || 'selected service');
+        _renderRealtimeGraph(activeProvider, entry?.metadata || {}, null);
+        document.getElementById('github-findings-subtitle').textContent = `Detailed findings for ${entry?.name || 'the selected service'}.`;
         document.getElementById('github-metadata-json').textContent = JSON.stringify(entry?.metadata || {}, null, 2);
         document.getElementById('github-findings-list').innerHTML = entry?.findingsHtml || '<p class="empty-state">No findings available.</p>';
     }
@@ -550,10 +587,99 @@ const Compliance = (() => {
         });
     }
 
+    function _updateMetadataHeading(provider, serviceName) {
+        const providerLabel = PROVIDER_LABELS[provider] || provider || 'Service';
+        const title = document.getElementById('github-metadata-title');
+        const subtitle = document.getElementById('github-metadata-subtitle');
+        if (title) {
+            title.textContent = `${providerLabel} Metadata`;
+        }
+        if (subtitle) {
+            subtitle.textContent = `Raw JSON metadata captured for ${serviceName || 'the selected service'}.`;
+        }
+    }
+
+    function _renderRealtimeGraph(provider, result, githubService = null) {
+        const panel = document.getElementById('github-graph-panel');
+        const title = document.getElementById('github-graph-title');
+        const subtitle = document.getElementById('github-graph-subtitle');
+        if (!panel || !title || !subtitle) return;
+
+        const graph = _buildRealtimeGraphModel(provider, result, githubService);
+        title.textContent = graph.title;
+        subtitle.textContent = graph.subtitle;
+
+        if (!graph.items.length) {
+            panel.innerHTML = '<p class="empty-state">No graphable realtime metrics are available for this service.</p>';
+            return;
+        }
+
+        const maxValue = Math.max(...graph.items.map(item => item.value), 1);
+        panel.innerHTML = `
+            <div class="github-realtime-graph">
+                ${graph.items.map(item => `
+                    <div class="github-realtime-row">
+                        <div class="github-realtime-row__label">
+                            <span>${item.label}</span>
+                            <strong>${item.value}</strong>
+                        </div>
+                        <div class="github-realtime-row__track">
+                            <div class="github-realtime-row__fill" style="width:${Math.max((item.value / maxValue) * 100, item.value > 0 ? 8 : 0)}%"></div>
+                        </div>
+                    </div>
+                `).join('')}
+            </div>
+        `;
+    }
+
+    function _buildRealtimeGraphModel(provider, result, githubService = null) {
+        if (provider === 'github') {
+            const service = githubService || {};
+            const metrics = service.metrics || {};
+            const items = Object.entries(metrics)
+                .filter(([, value]) => typeof value === 'number')
+                .slice(0, 6)
+                .map(([key, value]) => ({ label: key.replace(/_/g, ' '), value }));
+            return {
+                title: `${service.name || 'GitHub'} Realtime Overview`,
+                subtitle: 'Live GitHub metrics from the selected service surface.',
+                items,
+            };
+        }
+
+        const inventory = result.api_findings?.inventory || {};
+        const health = result.api_findings?.health || {};
+        const subscriptions = result.api_findings?.subscriptions || [];
+        const metrics = [
+            { label: 'Resources', value: Number(inventory.resource_count || 0) },
+            { label: 'Observations', value: Number((health.observations || []).length) },
+            { label: 'Sample Items', value: Number((inventory.sample || []).length) },
+            { label: 'Detailed Items', value: Number((inventory.items_preview || []).length) },
+        ];
+
+        if (provider === 'azure') {
+            metrics.push({ label: 'Subscriptions', value: Number(subscriptions.length || 0) });
+        }
+
+        return {
+            title: `${PROVIDER_LABELS[provider]} Realtime Overview`,
+            subtitle: 'Live inventory metrics from the selected service scan.',
+            items: metrics.filter(item => item.value > 0),
+        };
+    }
+
     function _renderApiFindings(findings, provider) {
         const container = document.getElementById('api-findings-content');
         if (provider === 'github') {
             container.innerHTML = _renderGithubApiFindings(findings);
+            return;
+        }
+        if (provider === 'aws') {
+            container.innerHTML = _renderAwsApiFindings(findings);
+            return;
+        }
+        if (provider === 'azure') {
+            container.innerHTML = _renderAzureApiFindings(findings);
             return;
         }
         container.innerHTML = _renderGenericFindings(findings);
@@ -570,6 +696,672 @@ const Compliance = (() => {
                 </div>
                 <p>${_summarizeValue(value)}</p>
             </div>`).join('')}</div>`;
+    }
+
+    function _renderAwsApiFindings(findings) {
+        const integration = findings.integration || {};
+        const inventory = findings.inventory || {};
+        const health = findings.health || {};
+        const errors = findings.errors?.messages || [];
+        const sample = inventory.sample || [];
+        const observations = health.observations || [];
+
+        const cards = [];
+
+        cards.push(`
+            <div class="finding-card ${health.status === 'pass' ? 'finding-pass' : health.status === 'warn' ? 'finding-warn' : 'finding-info'}">
+                <div class="finding-header">
+                    <span class="finding-badge">${health.score ?? '--'}</span>
+                    <h4>${integration.service_name || 'AWS Service'} Summary</h4>
+                </div>
+                <p>${health.summary || 'Realtime AWS API monitoring completed for the selected service.'}</p>
+            </div>
+        `);
+
+        cards.push(`
+            <div class="finding-card finding-info">
+                <div class="finding-header">
+                    <span class="finding-badge">${inventory.resource_count ?? 0}</span>
+                    <h4>Resource Inventory</h4>
+                </div>
+                <p>${_buildAwsInventoryNarrative(integration, inventory)}</p>
+            </div>
+        `);
+
+        if (observations.length) {
+            cards.push(`
+                <div class="finding-card finding-info">
+                    <div class="finding-header">
+                        <span class="finding-badge">${observations.length}</span>
+                        <h4>Security Interpretation</h4>
+                    </div>
+                    <p>${observations.join(' ')}</p>
+                </div>
+            `);
+        }
+
+        if (sample.length) {
+            cards.push(`
+                <div class="finding-card finding-info">
+                    <div class="finding-header">
+                        <span class="finding-badge">${sample.length}</span>
+                        <h4>What Was Observed</h4>
+                    </div>
+                    <p>${_buildAwsSampleNarrative(sample)}</p>
+                </div>
+            `);
+        }
+
+        if (errors.length) {
+            cards.push(`
+                <div class="finding-card finding-warn">
+                    <div class="finding-header">
+                        <span class="finding-badge">${errors.length}</span>
+                        <h4>Access Limitations</h4>
+                    </div>
+                    <p>${errors.join(' ')}</p>
+                </div>
+            `);
+        }
+
+        return `<div class="findings-grid">${cards.join('')}</div>`;
+    }
+
+    function _renderAzureApiFindings(findings) {
+        const integration = findings.integration || {};
+        const inventory = findings.inventory || {};
+        const health = findings.health || {};
+        const errors = findings.errors?.messages || [];
+        const sample = inventory.sample || [];
+        const observations = health.observations || [];
+        const subscriptions = findings.subscriptions || [];
+
+        const cards = [];
+
+        cards.push(`
+            <div class="finding-card ${health.status === 'pass' ? 'finding-pass' : health.status === 'warn' ? 'finding-warn' : 'finding-info'}">
+                <div class="finding-header">
+                    <span class="finding-badge">${health.score ?? '--'}</span>
+                    <h4>${integration.service_name || 'Azure Service'} Summary</h4>
+                </div>
+                <p>${health.summary || 'Realtime Azure API monitoring completed for the selected service.'}</p>
+            </div>
+        `);
+
+        cards.push(`
+            <div class="finding-card finding-info">
+                <div class="finding-header">
+                    <span class="finding-badge">${inventory.resource_count ?? 0}</span>
+                    <h4>Resource Inventory</h4>
+                </div>
+                <p>${_buildAzureInventoryNarrative(integration, inventory, subscriptions)}</p>
+            </div>
+        `);
+
+        if (observations.length) {
+            cards.push(`
+                <div class="finding-card finding-info">
+                    <div class="finding-header">
+                        <span class="finding-badge">${observations.length}</span>
+                        <h4>Security Interpretation</h4>
+                    </div>
+                    <p>${observations.join(' ')}</p>
+                </div>
+            `);
+        }
+
+        if (sample.length) {
+            cards.push(`
+                <div class="finding-card finding-info">
+                    <div class="finding-header">
+                        <span class="finding-badge">${sample.length}</span>
+                        <h4>What Was Observed</h4>
+                    </div>
+                    <p>${_buildAzureSampleNarrative(sample)}</p>
+                </div>
+            `);
+        }
+
+        if (errors.length) {
+            cards.push(`
+                <div class="finding-card finding-warn">
+                    <div class="finding-header">
+                        <span class="finding-badge">${errors.length}</span>
+                        <h4>Access Limitations</h4>
+                    </div>
+                    <p>${errors.join(' ')}</p>
+                </div>
+            `);
+        }
+
+        return `<div class="findings-grid">${cards.join('')}</div>`;
+    }
+
+    function _renderAwsDetailedFindings(findings, result = {}) {
+        const integration = findings.integration || {};
+        const inventory = findings.inventory || {};
+        const health = findings.health || {};
+        const errors = findings.errors?.messages || [];
+        const detailedItems = inventory.items_preview || [];
+        const sample = inventory.sample || [];
+        const observations = health.observations || [];
+        const serviceName = integration.service_name || result.service_name || 'AWS service';
+        const region = integration.region || 'the configured region';
+        const count = inventory.resource_count ?? 0;
+
+        let html = '<div class="github-findings-list">';
+
+        html += `
+            <section class="github-findings-section">
+                <div class="github-findings-section__title">Service Narrative</div>
+                <article class="github-finding-item">
+                    <div class="github-finding-item__header">
+                        <div>
+                            <h5>${serviceName}</h5>
+                            <p>Realtime AWS API monitor</p>
+                        </div>
+                        <div class="github-finding-badges">
+                            <span class="github-chip ${health.status === 'pass' ? 'github-chip--pass' : health.status === 'warn' ? 'github-chip--warn' : 'github-chip--fail'}">${String(health.status || 'unknown').toUpperCase()}</span>
+                            <span class="github-chip">${count} resources</span>
+                        </div>
+                    </div>
+                    <p class="github-finding-body">${_buildAwsServiceNarrative(serviceName, count, region, health.summary)}</p>
+                </article>
+            </section>
+        `;
+
+        if (observations.length) {
+            html += `
+                <section class="github-findings-section">
+                    <div class="github-findings-section__title">Security Interpretation</div>
+                    ${observations.map(item => `
+                        <article class="github-finding-item github-finding-item--compact">
+                            <div class="github-finding-item__header">
+                                <div>
+                                    <h5>Observation</h5>
+                                    <p>${item}</p>
+                                </div>
+                            </div>
+                        </article>
+                    `).join('')}
+                </section>
+            `;
+        }
+
+        if (detailedItems.length || sample.length) {
+            html += `
+                <section class="github-findings-section">
+                    <div class="github-findings-section__title">Observed Resources</div>
+                    ${(detailedItems.length ? detailedItems : sample).map((item, index) => `
+                        <article class="github-finding-item github-finding-item--compact">
+                            <div class="github-finding-item__header">
+                                <div>
+                                    <h5>${_buildAwsResourceTitle(item, index)}</h5>
+                                    <p>${_buildAwsSampleNarrative([item])}</p>
+                                </div>
+                            </div>
+                            ${_renderAwsResourceStats(item)}
+                        </article>
+                    `).join('')}
+                </section>
+            `;
+        }
+
+        if (errors.length) {
+            html += `
+                <section class="github-findings-section">
+                    <div class="github-findings-section__title">Access Limitations</div>
+                    ${errors.map(item => `
+                        <article class="github-finding-item github-finding-item--compact">
+                            <div class="github-finding-item__header">
+                                <div>
+                                    <h5>Permission Gap</h5>
+                                    <p>${item}</p>
+                                </div>
+                                <div class="github-finding-badges">
+                                    <span class="github-chip github-chip--warn">attention</span>
+                                </div>
+                            </div>
+                        </article>
+                    `).join('')}
+                </section>
+            `;
+        }
+
+        html += '</div>';
+        return html;
+    }
+
+    function _renderAzureDetailedFindings(findings, result = {}) {
+        const integration = findings.integration || {};
+        const inventory = findings.inventory || {};
+        const health = findings.health || {};
+        const errors = findings.errors?.messages || [];
+        const detailedItems = inventory.items_preview || [];
+        const sample = inventory.sample || [];
+        const observations = health.observations || [];
+        const subscriptions = findings.subscriptions || [];
+        const serviceName = integration.service_name || result.service_name || 'Azure service';
+        const count = inventory.resource_count ?? 0;
+
+        let html = '<div class="github-findings-list">';
+
+        html += `
+            <section class="github-findings-section">
+                <div class="github-findings-section__title">Service Narrative</div>
+                <article class="github-finding-item">
+                    <div class="github-finding-item__header">
+                        <div>
+                            <h5>${serviceName}</h5>
+                            <p>Realtime Azure Resource Manager monitor</p>
+                        </div>
+                        <div class="github-finding-badges">
+                            <span class="github-chip ${health.status === 'pass' ? 'github-chip--pass' : health.status === 'warn' ? 'github-chip--warn' : 'github-chip--fail'}">${String(health.status || 'unknown').toUpperCase()}</span>
+                            <span class="github-chip">${count} resources</span>
+                        </div>
+                    </div>
+                    <p class="github-finding-body">${_buildAzureServiceNarrative(serviceName, count, subscriptions, health.summary)}</p>
+                </article>
+            </section>
+        `;
+
+        if (observations.length) {
+            html += `
+                <section class="github-findings-section">
+                    <div class="github-findings-section__title">Security Interpretation</div>
+                    ${observations.map(item => `
+                        <article class="github-finding-item github-finding-item--compact">
+                            <div class="github-finding-item__header">
+                                <div>
+                                    <h5>Observation</h5>
+                                    <p>${item}</p>
+                                </div>
+                            </div>
+                        </article>
+                    `).join('')}
+                </section>
+            `;
+        }
+
+        if (detailedItems.length || sample.length) {
+            html += `
+                <section class="github-findings-section">
+                    <div class="github-findings-section__title">Observed Resources</div>
+                    ${(detailedItems.length ? detailedItems : sample).map((item, index) => `
+                        <article class="github-finding-item github-finding-item--compact">
+                            <div class="github-finding-item__header">
+                                <div>
+                                    <h5>${_buildAzureResourceTitle(item, index)}</h5>
+                                    <p>${_buildAzureSampleNarrative([item])}</p>
+                                </div>
+                            </div>
+                            ${_renderAzureResourceStats(item)}
+                        </article>
+                    `).join('')}
+                </section>
+            `;
+        }
+
+        if (errors.length) {
+            html += `
+                <section class="github-findings-section">
+                    <div class="github-findings-section__title">Access Limitations</div>
+                    ${errors.map(item => `
+                        <article class="github-finding-item github-finding-item--compact">
+                            <div class="github-finding-item__header">
+                                <div>
+                                    <h5>Permission Gap</h5>
+                                    <p>${item}</p>
+                                </div>
+                                <div class="github-finding-badges">
+                                    <span class="github-chip github-chip--warn">attention</span>
+                                </div>
+                            </div>
+                        </article>
+                    `).join('')}
+                </section>
+            `;
+        }
+
+        html += '</div>';
+        return html;
+    }
+
+    function _buildAwsInventoryNarrative(integration, inventory) {
+        const serviceName = integration.service_name || 'service';
+        const count = inventory.resource_count ?? 0;
+        const region = integration.region || 'the configured region';
+        if (count === 0) {
+            return `The realtime AWS API check did not return any ${serviceName} resources in ${region}. This can mean the service is currently unused in that region, or that the credentials do not have visibility into the relevant resources.`;
+        }
+        if (count === 1) {
+            return `The realtime AWS API check discovered 1 ${serviceName} resource in ${region}. The monitor captured a live inventory snapshot and prepared metadata so the service can be reviewed without opening the AWS console.`;
+        }
+        return `The realtime AWS API check discovered ${count} ${serviceName} resources in ${region}. The monitor captured a live inventory snapshot and prepared metadata so the service can be reviewed in one place without opening the AWS console.`;
+    }
+
+    function _buildAwsSampleNarrative(sample) {
+        const summaries = sample.slice(0, 3).map(item => {
+            if (!item || typeof item !== 'object') {
+                return `Observed item: ${String(item)}`;
+            }
+            const pairs = Object.entries(item).slice(0, 4).map(([key, value]) => `${key.replace(/_/g, ' ')} ${value}`);
+            return pairs.length ? pairs.join(', ') : 'Observed resource metadata was returned';
+        });
+        return summaries.join('. ') + '.';
+    }
+
+    function _buildAwsResourceTitle(item, index) {
+        if (!item || typeof item !== 'object') {
+            return `Sample ${index + 1}`;
+        }
+        return item.UserName
+            || item.DBInstanceIdentifier
+            || item.FunctionName
+            || item.BucketName
+            || item.QueueUrl
+            || item.TopicArn
+            || item.ClusterName
+            || item.Name
+            || item.Id
+            || `Sample ${index + 1}`;
+    }
+
+    function _renderAwsResourceStats(item) {
+        if (!item || typeof item !== 'object') {
+            return '';
+        }
+        const preferredKeys = [
+            'UserName', 'Arn', 'Path', 'CreateDate', 'PasswordLastUsed',
+            'DBInstanceIdentifier', 'Engine', 'EngineVersion', 'DBInstanceStatus',
+            'FunctionName', 'Runtime', 'LastModified',
+            'BucketName', 'CreationDate',
+            'VpcId', 'CidrBlock', 'State',
+            'KeyId', 'Description',
+        ];
+        const seen = new Set();
+        const stats = [];
+
+        preferredKeys.forEach(key => {
+            if (item[key] !== undefined && item[key] !== null && !seen.has(key)) {
+                seen.add(key);
+                stats.push(`<span>${key.replace(/([A-Z])/g, ' $1').trim()} <strong>${item[key]}</strong></span>`);
+            }
+        });
+
+        Object.entries(item).forEach(([key, value]) => {
+            if (stats.length >= 6 || seen.has(key) || value === undefined || value === null || typeof value === 'object') {
+                return;
+            }
+            stats.push(`<span>${key.replace(/_/g, ' ')} <strong>${value}</strong></span>`);
+        });
+
+        return stats.length ? `<div class="github-finding-stats">${stats.join('')}</div>` : '';
+    }
+
+    function _buildAwsServiceNarrative(serviceName, count, region, summary) {
+        const lead = summary || `${serviceName} was checked through the AWS API monitor.`;
+        if (count === 0) {
+            return `${lead} No live resources were returned in ${region}, which usually means this service is not currently in use there or the credentials do not have the necessary read permissions.`;
+        }
+        if (count === 1) {
+            return `${lead} The monitor found 1 live ${serviceName} resource in ${region} and converted that metadata into a reviewable service snapshot for this report.`;
+        }
+        return `${lead} The monitor found ${count} live ${serviceName} resources in ${region} and converted that metadata into a reviewable service snapshot for this report.`;
+    }
+
+    function _buildAzureInventoryNarrative(integration, inventory, subscriptions) {
+        const serviceName = integration.service_name || 'service';
+        const count = inventory.resource_count ?? 0;
+        const subscriptionCount = subscriptions.length || 0;
+        if (count === 0) {
+            return `The realtime Azure API check did not return any ${serviceName} resources across ${subscriptionCount || 'the connected'} subscription scope. This usually means the service is not yet in use or the token does not have read access to those resources.`;
+        }
+        if (count === 1) {
+            return `The realtime Azure API check discovered 1 ${serviceName} resource across ${subscriptionCount || 1} subscription scope. The monitor captured a live ARM inventory snapshot so the service can be reviewed without signing into the Azure portal.`;
+        }
+        return `The realtime Azure API check discovered ${count} ${serviceName} resources across ${subscriptionCount || 'the connected'} subscription scope. The monitor captured a live ARM inventory snapshot so the service can be reviewed in one place without signing into the Azure portal.`;
+    }
+
+    function _buildAzureSampleNarrative(sample) {
+        const summaries = sample.slice(0, 3).map(item => {
+            if (!item || typeof item !== 'object') {
+                return `Observed item: ${String(item)}`;
+            }
+            const pairs = Object.entries(item).slice(0, 4).map(([key, value]) => `${key.replace(/_/g, ' ')} ${value}`);
+            return pairs.length ? pairs.join(', ') : 'Observed resource metadata was returned';
+        });
+        return summaries.join('. ') + '.';
+    }
+
+    function _buildAzureResourceTitle(item, index) {
+        if (!item || typeof item !== 'object') {
+            return `Resource ${index + 1}`;
+        }
+        return item.name
+            || item.displayName
+            || item.id
+            || item.resourceGroup
+            || item.subscriptionId
+            || `Resource ${index + 1}`;
+    }
+
+    function _renderAzureResourceStats(item) {
+        if (!item || typeof item !== 'object') {
+            return '';
+        }
+        const preferredKeys = [
+            'name', 'displayName', 'type', 'location', 'subscriptionId',
+            'resourceGroup', 'kind', 'id', 'tenantId', 'state',
+            'addressPrefix', 'vnet', 'provisioningState',
+        ];
+        const seen = new Set();
+        const stats = [];
+
+        preferredKeys.forEach(key => {
+            if (item[key] !== undefined && item[key] !== null && !seen.has(key) && typeof item[key] !== 'object') {
+                seen.add(key);
+                stats.push(`<span>${key.replace(/([A-Z])/g, ' $1').replace(/_/g, ' ').trim()} <strong>${item[key]}</strong></span>`);
+            }
+        });
+
+        Object.entries(item).forEach(([key, value]) => {
+            if (stats.length >= 6 || seen.has(key) || value === undefined || value === null || typeof value === 'object') {
+                return;
+            }
+            stats.push(`<span>${key.replace(/_/g, ' ')} <strong>${value}</strong></span>`);
+        });
+
+        return stats.length ? `<div class="github-finding-stats">${stats.join('')}</div>` : '';
+    }
+
+    function _buildAzureServiceNarrative(serviceName, count, subscriptions, summary) {
+        const lead = summary || `${serviceName} was checked through the Azure API monitor.`;
+        const scope = subscriptions.length ? `${subscriptions.length} subscription${subscriptions.length === 1 ? '' : 's'}` : 'the connected Azure scope';
+        if (count === 0) {
+            return `${lead} No live resources were returned across ${scope}, which usually means this service is not currently in use there or the token does not have the necessary read permissions.`;
+        }
+        if (count === 1) {
+            return `${lead} The monitor found 1 live ${serviceName} resource across ${scope} and converted that metadata into a reviewable service snapshot for this report.`;
+        }
+        return `${lead} The monitor found ${count} live ${serviceName} resources across ${scope} and converted that metadata into a reviewable service snapshot for this report.`;
+    }
+
+    function _renderGitlabDetailedFindings(findings, result = {}) {
+        const integration = findings.integration || {};
+        const inventory = findings.inventory || {};
+        const health = findings.health || {};
+        const access = findings.access || {};
+        const detailedItems = inventory.items_preview || [];
+        const sample = inventory.sample || [];
+        const observations = health.observations || [];
+        const notes = access.notes || [];
+        const errors = access.errors || [];
+        const scope = findings.scope || {};
+        const serviceName = integration.service_name || result.service_name || 'GitLab service';
+        const count = inventory.resource_count ?? 0;
+
+        let html = '<div class="github-findings-list">';
+
+        html += `
+            <section class="github-findings-section">
+                <div class="github-findings-section__title">Service Narrative</div>
+                <article class="github-finding-item">
+                    <div class="github-finding-item__header">
+                        <div>
+                            <h5>${serviceName}</h5>
+                            <p>Realtime GitLab API monitor</p>
+                        </div>
+                        <div class="github-finding-badges">
+                            <span class="github-chip ${health.status === 'pass' ? 'github-chip--pass' : health.status === 'warn' ? 'github-chip--warn' : 'github-chip--fail'}">${String(health.status || 'unknown').toUpperCase()}</span>
+                            <span class="github-chip">${count} resources</span>
+                        </div>
+                    </div>
+                    <p class="github-finding-body">${_buildGitlabServiceNarrative(serviceName, count, scope, integration.base_url, health.summary)}</p>
+                </article>
+            </section>
+        `;
+
+        if (observations.length) {
+            html += `
+                <section class="github-findings-section">
+                    <div class="github-findings-section__title">Security Interpretation</div>
+                    ${observations.map(item => `
+                        <article class="github-finding-item github-finding-item--compact">
+                            <div class="github-finding-item__header">
+                                <div>
+                                    <h5>Observation</h5>
+                                    <p>${item}</p>
+                                </div>
+                            </div>
+                        </article>
+                    `).join('')}
+                </section>
+            `;
+        }
+
+        if (detailedItems.length || sample.length) {
+            html += `
+                <section class="github-findings-section">
+                    <div class="github-findings-section__title">Observed Resources</div>
+                    ${(detailedItems.length ? detailedItems : sample).map((item, index) => `
+                        <article class="github-finding-item github-finding-item--compact">
+                            <div class="github-finding-item__header">
+                                <div>
+                                    <h5>${_buildGitlabResourceTitle(item, index)}</h5>
+                                    <p>${_buildGitlabSampleNarrative([item])}</p>
+                                </div>
+                            </div>
+                            ${_renderGitlabResourceStats(item)}
+                        </article>
+                    `).join('')}
+                </section>
+            `;
+        }
+
+        if (notes.length || errors.length) {
+            html += `
+                <section class="github-findings-section">
+                    <div class="github-findings-section__title">Access Limitations</div>
+                    ${notes.map(item => `
+                        <article class="github-finding-item github-finding-item--compact">
+                            <div class="github-finding-item__header">
+                                <div>
+                                    <h5>Scope Note</h5>
+                                    <p>${item}</p>
+                                </div>
+                            </div>
+                        </article>
+                    `).join('')}
+                    ${errors.map(item => `
+                        <article class="github-finding-item github-finding-item--compact">
+                            <div class="github-finding-item__header">
+                                <div>
+                                    <h5>Permission Gap</h5>
+                                    <p>${item}</p>
+                                </div>
+                            </div>
+                            <div class="github-finding-badges">
+                                <span class="github-chip github-chip--warn">attention</span>
+                            </div>
+                        </article>
+                    `).join('')}
+                </section>
+            `;
+        }
+
+        html += '</div>';
+        return html;
+    }
+
+    function _buildGitlabServiceNarrative(serviceName, count, scope, baseUrl, summary) {
+        const lead = summary || `${serviceName} was checked through the GitLab API monitor.`;
+        const projects = scope.project_count || 0;
+        const groups = scope.group_count || 0;
+        const footprint = `${projects} project${projects === 1 ? '' : 's'} and ${groups} group${groups === 1 ? '' : 's'}`;
+        if (count === 0) {
+            return `${lead} No live resources were returned from ${baseUrl || 'the configured GitLab host'} within the authenticated scope of ${footprint}, which usually means the service is not currently in use there or the token cannot read those records.`;
+        }
+        if (count === 1) {
+            return `${lead} The monitor found 1 live ${serviceName} record from ${baseUrl || 'the configured GitLab host'} and converted that metadata into a reviewable service snapshot across ${footprint}.`;
+        }
+        return `${lead} The monitor found ${count} live ${serviceName} records from ${baseUrl || 'the configured GitLab host'} and converted that metadata into a reviewable service snapshot across ${footprint}.`;
+    }
+
+    function _buildGitlabSampleNarrative(sample) {
+        const summaries = sample.slice(0, 3).map(item => {
+            if (!item || typeof item !== 'object') {
+                return `Observed item: ${String(item)}`;
+            }
+            const pairs = Object.entries(item).slice(0, 4).map(([key, value]) => `${key.replace(/_/g, ' ')} ${value}`);
+            return pairs.length ? pairs.join(', ') : 'Observed GitLab metadata was returned';
+        });
+        return summaries.join('. ') + '.';
+    }
+
+    function _buildGitlabResourceTitle(item, index) {
+        if (!item || typeof item !== 'object') {
+            return `Resource ${index + 1}`;
+        }
+        return item.path_with_namespace
+            || item.full_path
+            || item.project_name
+            || item.source_name
+            || item.title
+            || item.name
+            || item.username
+            || item.ref
+            || item.web_url
+            || `Resource ${index + 1}`;
+    }
+
+    function _renderGitlabResourceStats(item) {
+        if (!item || typeof item !== 'object') {
+            return '';
+        }
+        const preferredKeys = [
+            'project_name', 'source_name', 'path_with_namespace', 'full_path', 'username',
+            'state', 'status', 'visibility', 'ref', 'environment_scope', 'protected',
+            'masked', 'raw', 'web_url', 'created_at', 'last_activity_at',
+        ];
+        const seen = new Set();
+        const stats = [];
+
+        preferredKeys.forEach(key => {
+            if (item[key] !== undefined && item[key] !== null && !seen.has(key) && typeof item[key] !== 'object') {
+                seen.add(key);
+                stats.push(`<span>${key.replace(/([A-Z])/g, ' $1').replace(/_/g, ' ').trim()} <strong>${item[key]}</strong></span>`);
+            }
+        });
+
+        Object.entries(item).forEach(([key, value]) => {
+            if (stats.length >= 6 || seen.has(key) || value === undefined || value === null || typeof value === 'object') {
+                return;
+            }
+            stats.push(`<span>${key.replace(/_/g, ' ')} <strong>${value}</strong></span>`);
+        });
+
+        return stats.length ? `<div class="github-finding-stats">${stats.join('')}</div>` : '';
     }
 
     function _renderGithubApiFindings(findings) {
@@ -840,7 +1632,7 @@ const Compliance = (() => {
         if (status === 'pass') return '\u2713';
         if (status === 'fail') return '\u2715';
         if (status === 'warn') return '!';
-        return '?';
+        return 'i';
     }
 
     function _formatGithubMetrics(metrics) {
@@ -870,13 +1662,26 @@ const Compliance = (() => {
         document.getElementById('cc-tabs').style.pointerEvents = '';
         document.getElementById('cc-tabs').style.opacity = '';
         document.getElementById('compliance-processing').style.display = 'none';
-        document.getElementById('compliance-results').style.display = activeProvider === 'github' && providerResults.github ? 'block' : 'none';
+        document.getElementById('compliance-results').style.display =
+            (activeProvider === 'github' && providerResults.github)
+            || (activeProvider === 'gitlab' && providerResults.gitlab)
+                ? 'block'
+                : 'none';
         document.getElementById('github-dashboard-card').style.display = 'none';
         activeDashboardKey = null;
         _renderProviderHero();
         _renderSelectedServiceState();
+        if (activeProvider === 'aws' && providerResults.aws) {
+            _renderCachedAwsResult();
+        }
+        if (activeProvider === 'azure' && providerResults.azure) {
+            _renderCachedAzureResult();
+        }
         if (activeProvider === 'github' && providerResults.github) {
             _renderCachedGithubResult();
+        }
+        if (activeProvider === 'gitlab' && providerResults.gitlab) {
+            _renderCachedGitlabResult();
         }
     }
 

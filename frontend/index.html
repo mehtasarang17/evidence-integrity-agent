@@ -35,7 +35,7 @@
                 <span class="nav-icon">⬆</span> Upload
             </a>
             <a href="#" class="nav-link" data-section="compliance" id="nav-compliance">
-                <span class="nav-icon">☁</span> Cloud Compliance
+                <span class="nav-icon">☁</span> Service Monitoring
             </a>
             <a href="#" class="nav-link" data-section="results" id="nav-results">
                 <span class="nav-icon">📊</span> Results
@@ -197,14 +197,14 @@
             </div>
         </section>
 
-        <!-- SECTION: Cloud Compliance -->
+        <!-- SECTION: Service Monitoring -->
         <section class="section" id="section-compliance">
             <div class="section-header">
                 <h1 class="hero-title">
-                    <span class="title-line">Cloud Security</span>
-                    <span class="title-line gradient-text">Compliance Check</span>
+                    <span class="title-line">Realtime</span>
+                    <span class="title-line gradient-text">Service Monitoring</span>
                 </h1>
-                <p class="hero-subtitle">Verify encryption policies and security settings across AWS, Azure, and GitHub using automated browser analysis with AI-powered verification.</p>
+                <p class="hero-subtitle">Monitor live service activity and connected integrations across AWS, Azure, GitHub, and GitLab using API-driven collection and AI-assisted evidence review.</p>
             </div>
 
             <div class="cc-tabs" id="cc-tabs">
@@ -235,6 +235,15 @@
                         <span class="cc-tab__check" id="tab-github-status">Checking credentials…</span>
                     </div>
                 </button>
+                <button class="cc-tab" data-provider="gitlab" id="tab-gitlab">
+                    <div class="cc-tab__icon-wrap cc-tab__icon-wrap--gitlab">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M12 21.7L4.5 13.9 7.4 2.9h9.2l2.9 11z"/><path d="M7.4 2.9l4.6 18.8 4.6-18.8"/><path d="M4.5 13.9h15"/></svg>
+                    </div>
+                    <div class="cc-tab__text">
+                        <span class="cc-tab__name">GitLab</span>
+                        <span class="cc-tab__check" id="tab-gitlab-status">Checking credentials…</span>
+                    </div>
+                </button>
             </div>
 
             <div class="cc-credentials-wrap" id="cc-credentials-wrap">
@@ -245,21 +254,31 @@
                             <h3 class="cc-service-sidebar__title" id="cc-provider-title">AWS</h3>
                             <p class="cc-service-sidebar__desc" id="cc-provider-description">Services available from the configured provider credentials.</p>
                         </div>
-                        <div class="cc-service-list" id="cc-service-list"></div>
+                        <div class="cc-service-search">
+                            <input
+                                type="search"
+                                id="cc-service-search"
+                                class="cc-service-search__input"
+                                placeholder="Search services"
+                                autocomplete="off"
+                            >
+                        </div>
+                        <div class="cc-service-list cc-service-list--sidebar" id="cc-service-list"></div>
+                        <button type="button" class="cc-service-more" id="cc-service-more" hidden>Show more</button>
                     </aside>
 
                     <div class="cc-service-stage">
                         <div class="cc-service-stage__hero">
                             <div>
-                                <p class="cc-service-stage__eyebrow">Cloud Compliance</p>
+                                <p class="cc-service-stage__eyebrow">Realtime Monitoring</p>
                                 <h3 class="cc-service-stage__title" id="cc-selected-service-title">Select a service</h3>
-                                <p class="cc-service-stage__desc" id="cc-selected-service-desc">Choose a provider service from the left rail to inspect the configured environment.</p>
+                                <p class="cc-service-stage__desc" id="cc-selected-service-desc">Choose a provider service to inspect the configured environment.</p>
                             </div>
                             <button class="btn btn-primary btn-glow" id="btn-run-selected-service" disabled>
                                 <span class="btn-icon">
                                     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="18" height="18"><circle cx="11" cy="11" r="4"/><path d="M21 21l-4.35-4.35"/><path d="M11 8v6M8 11h6"/></svg>
                                 </span>
-                                Analyze Service
+                                Monitor Service
                             </button>
                         </div>
                         <div class="cc-service-stage__meta" id="cc-provider-health-banner">
@@ -269,8 +288,8 @@
                         <div class="cc-processing cc-processing--inline" id="compliance-processing" style="display: none;">
                             <div class="cc-processing__inner">
                                 <div class="cc-processing__orb"></div>
-                                <h2 class="cc-processing__title">Running Compliance Check</h2>
-                                <p class="cc-processing__subtitle" id="compliance-provider-name">GitHub Posture Review</p>
+                                <h2 class="cc-processing__title" id="compliance-processing-title">Service Analysis</h2>
+                                <p class="cc-processing__subtitle" id="compliance-provider-name">GitHub Services</p>
                                 <div class="cc-processing__bar">
                                     <div class="cc-processing__bar-fill" id="cc-processing-bar-fill"></div>
                                 </div>
@@ -283,10 +302,6 @@
                                         <div class="cc-step__dot"></div>
                                         <span class="cc-step__label">Querying API</span>
                                     </div>
-                                    <div class="cc-step" id="step-screenshot" data-status="waiting">
-                                        <div class="cc-step__dot"></div>
-                                        <span class="cc-step__label">Capturing Screenshots</span>
-                                    </div>
                                     <div class="cc-step" id="step-analysis" data-status="waiting">
                                         <div class="cc-step__dot"></div>
                                         <span class="cc-step__label">AI Analysis</span>
@@ -297,9 +312,9 @@
 
                         <div class="cc-results cc-results--inline" id="compliance-results" style="display: none;">
                             <div class="cc-results__header">
-                                <h2 class="results-title" id="compliance-results-title">Compliance Report</h2>
+                                <h2 class="results-title" id="compliance-results-title">Monitoring Report</h2>
                                 <button class="btn btn-ghost" id="btn-new-compliance">
-                                    <span>+</span> New Check
+                                    <span>+</span> New Monitor
                                 </button>
                             </div>
 
@@ -307,7 +322,7 @@
                                 <div class="cc-status-banner__icon" id="compliance-status-icon">?</div>
                                 <div class="cc-status-banner__details">
                                     <h3 id="compliance-status-text">Checking...</h3>
-                                    <p id="compliance-status-desc">Analysis in progress</p>
+                                    <p id="compliance-status-desc">Monitoring in progress</p>
                                 </div>
                             </div>
 
@@ -315,84 +330,38 @@
                                 <div class="github-dashboard-hero">
                                     <div>
                                         <p class="github-dashboard-kicker">GitHub Service Overview</p>
-                                        <h3 class="github-dashboard-title">Security posture across five GitHub surfaces</h3>
+                                        <h3 class="github-dashboard-title">Live monitoring across GitHub services</h3>
                                         <p class="github-dashboard-copy" id="github-dashboard-copy">Run a GitHub analysis to populate the dashboard.</p>
                                     </div>
-                                    <div class="github-score-orb">
-                                        <span class="github-score-orb__value" id="github-score-value">--</span>
-                                        <span class="github-score-orb__label">overall score</span>
-                                    </div>
                                 </div>
 
-                                <div class="github-metrics-strip" id="github-metrics-strip">
-                                    <div class="github-metric-pill">
-                                        <span class="github-metric-pill__label">Passed</span>
-                                        <strong class="github-metric-pill__value" id="github-passed-count">--</strong>
-                                    </div>
-                                    <div class="github-metric-pill">
-                                        <span class="github-metric-pill__label">Warnings</span>
-                                        <strong class="github-metric-pill__value" id="github-warn-count">--</strong>
-                                    </div>
-                                    <div class="github-metric-pill">
-                                        <span class="github-metric-pill__label">Failures</span>
-                                        <strong class="github-metric-pill__value" id="github-fail-count">--</strong>
-                                    </div>
-                                    <div class="github-metric-pill">
-                                        <span class="github-metric-pill__label">Unknown</span>
-                                        <strong class="github-metric-pill__value" id="github-unknown-count">--</strong>
-                                    </div>
-                                </div>
-
-                                <div class="github-dashboard-grid">
-                                    <div class="github-service-panel">
-                                        <div class="github-section-heading">
-                                            <h4>Service Status</h4>
-                                            <span>Click any card to inspect findings and the generated metadata JSON.</span>
+                                <div class="github-dashboard-body">
+                                    <div class="github-dashboard-main">
+                                        <div class="github-findings-panel">
+                                            <div class="github-section-heading">
+                                                <h4>Detailed Findings</h4>
+                                                <span id="github-findings-subtitle">Inventory view for the selected service.</span>
+                                            </div>
+                                            <div class="github-findings-list" id="github-findings-list"></div>
                                         </div>
-                                        <div class="github-service-cards" id="github-service-cards"></div>
-                                    </div>
-                                    <div class="github-bar-panel">
-                                        <div class="github-section-heading">
-                                            <h4>Score Graph</h4>
-                                            <span>Weighted status across the five GitHub categories.</span>
+
+                                        <div class="github-metadata-panel">
+                                            <div class="github-section-heading">
+                                                <h4 id="github-graph-title">Realtime Overview</h4>
+                                                <span id="github-graph-subtitle">Live service metrics rendered from the latest provider scan.</span>
+                                            </div>
+                                            <div class="github-graph-panel" id="github-graph-panel"></div>
                                         </div>
-                                        <div class="github-bargraph" id="github-bargraph"></div>
+
+                                        <div class="github-metadata-panel">
+                                            <div class="github-section-heading">
+                                                <h4 id="github-metadata-title">Service Metadata</h4>
+                                                <span id="github-metadata-subtitle">Raw JSON metadata captured for the selected service.</span>
+                                            </div>
+                                            <pre class="github-metadata-json" id="github-metadata-json">Select a service to inspect its metadata.</pre>
+                                        </div>
                                     </div>
                                 </div>
-
-                                <div class="github-findings-panel">
-                                    <div class="github-section-heading">
-                                        <h4>Detailed Findings</h4>
-                                        <span>Inventory view for the selected GitHub surface.</span>
-                                    </div>
-                                    <div class="github-findings-list" id="github-findings-list"></div>
-                                </div>
-
-                                <div class="github-metadata-panel">
-                                    <div class="github-section-heading">
-                                        <h4>GitHub Metadata</h4>
-                                        <span>Raw JSON metadata captured for the selected service.</span>
-                                    </div>
-                                    <div class="github-metadata-tabs" id="github-metadata-tabs"></div>
-                                    <pre class="github-metadata-json" id="github-metadata-json">Select a GitHub service to inspect its metadata.</pre>
-                                </div>
-                            </div>
-
-                            <div class="result-card full-width" id="screenshots-card" style="display: none;">
-                                <h3 class="card-title">Captured Screenshots</h3>
-                                <div class="cc-screenshots" id="screenshots-gallery"></div>
-                            </div>
-
-                            <div class="result-card full-width">
-                                <h3 class="card-title">API Findings</h3>
-                                <div class="cc-findings" id="api-findings-content">
-                                    <p class="empty-state">No findings yet.</p>
-                                </div>
-                            </div>
-
-                            <div class="result-card full-width" id="vision-card" style="display: none;">
-                                <h3 class="card-title">AI Vision Analysis</h3>
-                                <div class="cc-vision" id="vision-analysis-content"></div>
                             </div>
                         </div>
                     </div>

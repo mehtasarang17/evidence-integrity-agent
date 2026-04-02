@@ -41,6 +41,8 @@ class Config:
     COMPLIANCE_AZURE_CLIENT_SECRET = os.getenv("COMPLIANCE_AZURE_CLIENT_SECRET", "")
 
     COMPLIANCE_GITHUB_TOKEN = os.getenv("COMPLIANCE_GITHUB_TOKEN", "")
+    COMPLIANCE_GITLAB_TOKEN = os.getenv("COMPLIANCE_GITLAB_TOKEN", "")
+    COMPLIANCE_GITLAB_BASE_URL = os.getenv("COMPLIANCE_GITLAB_BASE_URL", "https://gitlab.com")
 
     # LangSmith
     LANGCHAIN_TRACING_V2 = os.getenv("LANGCHAIN_TRACING_V2", "false").lower() == "true"
