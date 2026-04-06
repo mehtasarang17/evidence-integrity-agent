@@ -1,4 +1,4 @@
-"""API-only AWS realtime monitoring with generated dashboard screenshots."""
+"""API-only AWS realtime monitoring with provider-wide inventory snapshots."""
 
 from __future__ import annotations
 
@@ -136,13 +136,14 @@ def check_aws_realtime_service(access_key: str, secret_key: str, region: str, se
         }
 
     session = _build_session(access_key, secret_key, region)
-    observed_region = "us-east-1" if meta.get("global_service") else region
+    observed_region = "global" if meta.get("global_service") else "all enabled regions"
     api_findings = {
         "integration": {
             "service_id": service,
             "service_name": meta["name"],
             "description": meta["description"],
             "region": observed_region,
+            "region_scope": "global" if meta.get("global_service") else "regional",
             "mode": "api-only realtime monitor",
             "checked_at": datetime.utcnow().isoformat(),
         }
@@ -150,19 +151,26 @@ def check_aws_realtime_service(access_key: str, secret_key: str, region: str, se
 
     try:
         items = _fetch_service_items(session, meta, region)
+        available_regions = _collect_available_regions(items)
+        regional_counts = _count_items_by_region(items)
         status = "completed"
         errors: List[str] = []
     except Exception as exc:  # pragma: no cover - depends on live AWS permissions
         items = []
+        available_regions = []
+        regional_counts = {}
         status = "error"
         errors = [str(exc)]
 
+    api_findings["integration"]["available_regions"] = available_regions
     api_findings["inventory"] = {
         "resource_count": len(items),
         "sample": _sample_items(items),
         "items_preview": _items_preview(items),
+        "available_regions": available_regions,
+        "regional_resource_counts": regional_counts,
     }
-    api_findings["health"] = _build_health_section(meta, items, errors)
+    api_findings["health"] = _build_health_section(meta, items, errors, available_regions)
     if errors:
         api_findings["errors"] = {"messages": errors}
 
@@ -249,8 +257,22 @@ def _build_session(access_key: str, secret_key: str, region: str):
 
 
 def _fetch_service_items(session, meta: Dict[str, Any], region: str) -> List[Any]:
-    client_region = "us-east-1" if meta.get("global_service") else region
-    client = session.client(meta["client"], region_name=client_region, config=BotoConfig(retries={"max_attempts": 3}))
+    if meta.get("global_service"):
+        return _fetch_service_items_for_region(session, meta, "us-east-1")[:100]
+
+    collected: List[Any] = []
+    for region_name in _list_enabled_regions(session, region):
+        try:
+            collected.extend(_fetch_service_items_for_region(session, meta, region_name))
+        except Exception as exc:
+            logger.debug("AWS service %s unavailable in %s: %s", meta["name"], region_name, exc)
+        if len(collected) >= 100:
+            break
+    return collected[:100]
+
+
+def _fetch_service_items_for_region(session, meta: Dict[str, Any], region_name: str) -> List[Any]:
+    client = session.client(meta["client"], region_name=region_name, config=BotoConfig(retries={"max_attempts": 3}))
     operation_name = meta["operation"]
     params = dict(meta.get("params") or {})
 
@@ -263,15 +285,54 @@ def _fetch_service_items(session, meta: Dict[str, Any], region: str) -> List[Any
         pages = paginator.paginate(**params)
         collected: List[Any] = []
         for page in pages:
-            value = _extract_result_path(page, meta["result_key"])
-            collected.extend(_coerce_items(value))
+            collected.extend(_normalize_items(meta, page, region_name))
             if len(collected) >= 100:
                 break
         return collected[:100]
     except Exception:
         response = operation(**params)
-        value = _extract_result_path(response, meta["result_key"])
-        return _coerce_items(value)[:100]
+        return _normalize_items(meta, response, region_name)[:100]
+
+
+def _normalize_items(meta: Dict[str, Any], payload: Dict[str, Any], region_name: str) -> List[Any]:
+    if meta["client"] == "ec2" and meta["operation"] == "describe_instances":
+        reservations = _coerce_items(_extract_result_path(payload, meta["result_key"]))
+        flattened: List[Any] = []
+        for reservation in reservations:
+            if not isinstance(reservation, dict):
+                flattened.append(_attach_aws_region_context(reservation, region_name))
+                continue
+            instances = reservation.get("Instances") or []
+            if not instances:
+                flattened.append(_attach_aws_region_context(reservation, region_name))
+                continue
+            for instance in instances:
+                if isinstance(instance, dict):
+                    enriched = dict(instance)
+                    enriched.setdefault("ReservationId", reservation.get("ReservationId"))
+                    enriched.setdefault("OwnerId", reservation.get("OwnerId"))
+                    enriched.setdefault("Name", _extract_tag_value(instance.get("Tags"), "Name"))
+                    state = instance.get("State")
+                    if isinstance(state, dict) and state.get("Name"):
+                        enriched.setdefault("StateName", state.get("Name"))
+                    flattened.append(_attach_aws_region_context(enriched, region_name))
+                else:
+                    flattened.append(_attach_aws_region_context(instance, region_name))
+        return flattened
+
+    value = _extract_result_path(payload, meta["result_key"])
+    return [_attach_aws_region_context(item, region_name) for item in _coerce_items(value)]
+
+
+def _list_enabled_regions(session, default_region: str) -> List[str]:
+    try:
+        client = session.client("ec2", region_name=default_region or "us-east-1", config=BotoConfig(retries={"max_attempts": 3}))
+        response = client.describe_regions(AllRegions=False)
+        regions = sorted(region.get("RegionName") for region in response.get("Regions", []) if region.get("RegionName"))
+        return regions or [default_region or "us-east-1"]
+    except Exception as exc:
+        logger.debug("Falling back to configured AWS region list: %s", exc)
+        return [default_region or "us-east-1"]
 
 
 def _extract_result_path(payload: Dict[str, Any], path: str) -> Any:
@@ -313,7 +374,31 @@ def _sample_items(items: List[Any]) -> List[Any]:
 
 
 def _items_preview(items: List[Any]) -> List[Any]:
-    return [_serialize_preview_item(item) for item in items[:10]]
+    return [_serialize_preview_item(item) for item in items[:50]]
+
+
+def _attach_aws_region_context(item: Any, region_name: str) -> Any:
+    if not isinstance(item, dict):
+        return item
+    enriched = dict(item)
+    enriched.setdefault("_region", region_name)
+    return enriched
+
+
+def _collect_available_regions(items: List[Any]) -> List[str]:
+    return sorted({item.get("_region") for item in items if isinstance(item, dict) and item.get("_region")})
+
+
+def _count_items_by_region(items: List[Any]) -> Dict[str, int]:
+    counts: Dict[str, int] = {}
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        region_name = item.get("_region")
+        if not region_name:
+            continue
+        counts[region_name] = counts.get(region_name, 0) + 1
+    return counts
 
 
 def _serialize_preview_item(value: Any) -> Any:
@@ -324,29 +409,127 @@ def _serialize_preview_item(value: Any) -> Any:
     if isinstance(value, list):
         return [_serialize_preview_item(item) for item in value[:8]]
     if isinstance(value, dict):
+        if value.get("InstanceId"):
+            return _serialize_ec2_instance_preview(value)
         serialized = {}
+        display_name = _derive_aws_display_name(value)
+        if display_name:
+            serialized["display_name"] = display_name
+        preferred_keys = ["_region", "name", "Name", "id", "Id", "Arn", "ArnValue", "State", "StateName", "location"]
+        for key in preferred_keys:
+            if key in value and len(serialized) < 12:
+                serialized[key] = _serialize_preview_item(value[key])
         for index, (key, item) in enumerate(value.items()):
-            if index >= 12:
+            if key in serialized:
+                continue
+            if len(serialized) >= 12 or index >= 20:
                 break
             serialized[key] = _serialize_preview_item(item)
         return serialized
     return str(value)
 
 
-def _build_health_section(meta: Dict[str, Any], items: List[Any], errors: List[str]) -> Dict[str, Any]:
+def _serialize_ec2_instance_preview(value: Dict[str, Any]) -> Dict[str, Any]:
+    preview: Dict[str, Any] = {}
+    display_name = _derive_aws_display_name(value)
+    if display_name:
+        preview["display_name"] = display_name
+    ordered_fields = [
+        "Name",
+        "InstanceId",
+        "_region",
+        "StateName",
+        "InstanceType",
+        "PrivateIpAddress",
+        "PublicIpAddress",
+        "VpcId",
+        "SubnetId",
+        "Architecture",
+        "PlatformDetails",
+        "LaunchTime",
+        "ReservationId",
+        "ImageId",
+    ]
+    for key in ordered_fields:
+        if key in value and value.get(key) not in (None, ""):
+            preview[key] = _serialize_preview_item(value[key])
+
+    if "State" in value and "StateName" not in preview:
+        state = value.get("State")
+        if isinstance(state, dict) and state.get("Name"):
+            preview["StateName"] = state.get("Name")
+
+    if len(preview) < 14:
+        for key, item in value.items():
+            if key in preview:
+                continue
+            if len(preview) >= 14:
+                break
+            if isinstance(item, (dict, list)):
+                continue
+            preview[key] = _serialize_preview_item(item)
+    return preview
+
+
+def _extract_tag_value(tags: Any, key_name: str) -> str | None:
+    if not isinstance(tags, list):
+        return None
+    for tag in tags:
+        if isinstance(tag, dict) and tag.get("Key") == key_name:
+            return tag.get("Value")
+    return None
+
+
+def _derive_aws_display_name(item: Dict[str, Any]) -> str | None:
+    if not isinstance(item, dict):
+        return None
+
+    keys = [
+        "Name", "InstanceId", "VpcId", "SubnetId", "GroupId", "NetworkInterfaceId",
+        "InternetGatewayId", "NatGatewayId", "RouteTableId", "VpcPeeringConnectionId",
+        "TransitGatewayId", "VolumeId", "SnapshotId", "ImageId", "LaunchTemplateId",
+        "AllocationId", "EgressOnlyInternetGatewayId", "PrefixListId", "VpnGatewayId",
+        "VpnConnectionId", "CustomerGatewayId", "UserName", "RoleName",
+        "DBInstanceIdentifier", "DBClusterIdentifier", "DBSubnetGroupName",
+        "FunctionName", "BucketName", "TableName", "QueueName", "QueueUrl",
+        "TopicName", "TopicArn", "ClusterName", "RepositoryName", "SecretName",
+        "KeyId", "AliasName", "DistributionId", "HostedZoneId", "LoadBalancerArn",
+        "LoadBalancerName", "TargetGroupArn", "AutoScalingGroupName", "CertificateArn",
+        "RestApiId", "ApiId", "StackName", "CacheClusterId", "FileSystemId",
+        "VaultName", "WorkGroup", "Id", "Arn"
+    ]
+    for key in keys:
+        value = item.get(key)
+        if isinstance(value, str) and value.strip():
+            if key == "QueueUrl":
+                parts = value.split("/")
+                return parts[-1] or value
+            if key == "TopicArn" or key == "Arn" or key.endswith("Arn"):
+                arn_parts = value.split(":")
+                return arn_parts[-1] or value
+            return value
+
+    name_tag = _extract_tag_value(item.get("Tags"), "Name")
+    if name_tag:
+        return name_tag
+    return None
+
+
+def _build_health_section(meta: Dict[str, Any], items: List[Any], errors: List[str], available_regions: List[str]) -> Dict[str, Any]:
     score = 92 if not errors else 58
     status = "pass" if not errors else "warn"
+    region_note = f" across {len(available_regions)} region(s)" if available_regions and not meta.get("global_service") else ""
     return {
         "status": status,
         "score": score,
         "summary": (
-            f"Live AWS API check completed for {meta['name']} with {len(items)} resource(s) discovered."
+            f"Live AWS API check completed for {meta['name']} with {len(items)} resource(s) discovered{region_note}."
             if not errors
             else f"AWS API check completed with partial visibility issues for {meta['name']}."
         ),
         "observations": [
             f"Realtime AWS API integration is active for {meta['name']}.",
-            f"Observed {len(items)} resource(s) from {meta['operation']}.",
+            f"Observed {len(items)} resource(s) from {meta['operation']}{region_note}.",
         ] + ([f"Permission or API issue: {errors[0]}"] if errors else []),
     }
 

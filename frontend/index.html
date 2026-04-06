@@ -7,8 +7,8 @@
     <meta name="description" content="AI-powered evidence integrity verification system using multi-agent analysis for screenshots, logs, and digital documents.">
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
-    <link rel="stylesheet" href="css/styles.css">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&family=JetBrains+Mono:wght@400;500;600&family=Space+Grotesk:wght@500;700&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="css/styles.css?v=20260404-monitoring-demo">
 </head>
 <body>
     <!-- Particle Canvas Background -->
@@ -198,16 +198,49 @@
         </section>
 
         <!-- SECTION: Service Monitoring -->
-        <section class="section" id="section-compliance">
-            <div class="section-header">
-                <h1 class="hero-title">
-                    <span class="title-line">Realtime</span>
-                    <span class="title-line gradient-text">Service Monitoring</span>
-                </h1>
-                <p class="hero-subtitle">Monitor live service activity and connected integrations across AWS, Azure, GitHub, and GitLab using API-driven collection and AI-assisted evidence review.</p>
+        <section class="section" id="section-compliance" data-provider="aws">
+            <div class="section-header cc-hero">
+                <div class="cc-hero__copy">
+                    <p class="cc-kicker">Realtime Cloud Telemetry</p>
+                    <h1 class="hero-title">
+                        <span class="title-line">Realtime</span>
+                        <span class="title-line gradient-text">Service Monitoring</span>
+                    </h1>
+                    <p class="hero-subtitle">Monitor live service activity and connected integrations across AWS, Azure, GitHub, and GitLab using API-driven collection and AI-assisted evidence review.</p>
+                    <div class="cc-hero-badges">
+                        <span class="cc-hero-badge">Continuous snapshots</span>
+                        <span class="cc-hero-badge">API-backed inventory</span>
+                        <span class="cc-hero-badge">Split-view triage</span>
+                        <span class="cc-hero-badge">Evidence-ready metadata</span>
+                    </div>
+                </div>
+                <aside class="cc-hero-panel">
+                    <div class="cc-hero-panel__top">
+                        <span class="cc-hero-panel__label">Operations Fabric</span>
+                        <strong class="cc-hero-panel__title" id="cc-hero-provider">AWS monitoring fabric</strong>
+                        <p class="cc-hero-panel__copy">A curated view of live provider health, active service catalogs, and the latest snapshot cadence for this workspace.</p>
+                    </div>
+                    <div class="cc-hero-metrics">
+                        <article class="cc-hero-metric">
+                            <span>Providers online</span>
+                            <strong id="cc-hero-online-count">0/4</strong>
+                        </article>
+                        <article class="cc-hero-metric">
+                            <span>Service catalog</span>
+                            <strong id="cc-hero-service-count">Loading</strong>
+                        </article>
+                        <article class="cc-hero-metric">
+                            <span>Latest snapshot</span>
+                            <strong id="cc-hero-refresh">Awaiting cache</strong>
+                        </article>
+                    </div>
+                    <div class="cc-hero-provider-list" id="cc-hero-provider-list"></div>
+                </aside>
             </div>
 
-            <div class="cc-tabs" id="cc-tabs">
+            <div class="cc-command-deck">
+                <div class="cc-command-deck__label">Connected Providers</div>
+                <div class="cc-tabs" id="cc-tabs">
                 <button class="cc-tab cc-tab--active" data-provider="aws" id="tab-aws">
                     <div class="cc-tab__icon-wrap cc-tab__icon-wrap--aws">
                         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M19.5 6c-1.5 3-4.5 8-7.5 8S5 9 3.5 6"/><path d="M3 17.5C5 16 8 14 12 14s7 2 9 3.5"/><path d="M12 14v6"/></svg>
@@ -244,6 +277,7 @@
                         <span class="cc-tab__check" id="tab-gitlab-status">Checking credentials…</span>
                     </div>
                 </button>
+                </div>
             </div>
 
             <div class="cc-credentials-wrap" id="cc-credentials-wrap">
@@ -337,28 +371,38 @@
 
                                 <div class="github-dashboard-body">
                                     <div class="github-dashboard-main">
-                                        <div class="github-findings-panel">
+                                        <div class="github-findings-panel github-findings-panel--primary">
                                             <div class="github-section-heading">
-                                                <h4>Detailed Findings</h4>
-                                                <span id="github-findings-subtitle">Inventory view for the selected service.</span>
+                                                <div>
+                                                    <h4>Detailed Findings</h4>
+                                                    <span id="github-findings-subtitle">Inventory view for the selected service.</span>
+                                                </div>
+                                                <div class="cc-region-filter" id="cc-region-filter" hidden>
+                                                    <label class="cc-region-filter__label" for="cc-region-select">Region</label>
+                                                    <select class="cc-region-filter__select" id="cc-region-select">
+                                                        <option value="all">All regions</option>
+                                                    </select>
+                                                </div>
                                             </div>
                                             <div class="github-findings-list" id="github-findings-list"></div>
                                         </div>
 
-                                        <div class="github-metadata-panel">
-                                            <div class="github-section-heading">
-                                                <h4 id="github-graph-title">Realtime Overview</h4>
-                                                <span id="github-graph-subtitle">Live service metrics rendered from the latest provider scan.</span>
+                                        <div class="github-dashboard-side">
+                                            <div class="github-metadata-panel github-metadata-panel--graph">
+                                                <div class="github-section-heading">
+                                                    <h4 id="github-graph-title">Realtime Overview</h4>
+                                                    <span id="github-graph-subtitle">Live service metrics rendered from the latest provider scan.</span>
+                                                </div>
+                                                <div class="github-graph-panel" id="github-graph-panel"></div>
                                             </div>
-                                            <div class="github-graph-panel" id="github-graph-panel"></div>
-                                        </div>
 
-                                        <div class="github-metadata-panel">
-                                            <div class="github-section-heading">
-                                                <h4 id="github-metadata-title">Service Metadata</h4>
-                                                <span id="github-metadata-subtitle">Raw JSON metadata captured for the selected service.</span>
+                                            <div class="github-metadata-panel github-metadata-panel--json">
+                                                <div class="github-section-heading">
+                                                    <h4 id="github-metadata-title">Service Metadata</h4>
+                                                    <span id="github-metadata-subtitle">Raw JSON metadata captured for the selected service.</span>
+                                                </div>
+                                                <pre class="github-metadata-json" id="github-metadata-json">Select a service to inspect its metadata.</pre>
                                             </div>
-                                            <pre class="github-metadata-json" id="github-metadata-json">Select a service to inspect its metadata.</pre>
                                         </div>
                                     </div>
                                 </div>
@@ -501,10 +545,10 @@
     <!-- Toast Notification -->
     <div class="toast-container" id="toast-container"></div>
 
-    <script src="js/animations.js"></script>
-    <script src="js/upload.js"></script>
-    <script src="js/dashboard.js"></script>
-    <script src="js/compliance.js?v=3"></script>
-    <script src="js/app.js"></script>
+    <script src="js/animations.js?v=20260404-monitoring-demo"></script>
+    <script src="js/upload.js?v=20260404-monitoring-demo"></script>
+    <script src="js/dashboard.js?v=20260404-monitoring-demo"></script>
+    <script src="js/compliance.js?v=20260404-monitoring-demo"></script>
+    <script src="js/app.js?v=20260404-monitoring-demo"></script>
 </body>
 </html>

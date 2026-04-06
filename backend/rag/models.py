@@ -1,5 +1,5 @@
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 from sqlalchemy import create_engine, Column, String, Text, DateTime, Float, Integer, JSON
 from sqlalchemy.orm import declarative_base, sessionmaker
 from pgvector.sqlalchemy import Vector
@@ -9,6 +9,17 @@ Base = declarative_base()
 
 engine = create_engine(Config.DATABASE_URL, pool_pre_ping=True, pool_size=5)
 SessionLocal = sessionmaker(bind=engine)
+
+
+def _iso_utc(value):
+    """Serialize naive UTC datetimes with an explicit Z suffix."""
+    if not value:
+        return None
+    if value.tzinfo is None:
+        value = value.replace(tzinfo=timezone.utc)
+    else:
+        value = value.astimezone(timezone.utc)
+    return value.isoformat().replace("+00:00", "Z")
 
 
 class EvidencePattern(Base):
@@ -81,9 +92,35 @@ class AnalysisRecord(Base):
             "sha256": self.sha256,
             "md5": self.md5,
             "perceptual_hash": self.perceptual_hash,
-            "created_at": self.created_at.isoformat() if self.created_at else None,
-            "completed_at": self.completed_at.isoformat() if self.completed_at else None,
+            "created_at": _iso_utc(self.created_at),
+            "completed_at": _iso_utc(self.completed_at),
             "status": self.status,
+        }
+
+
+class MonitoringSnapshot(Base):
+    """Cached provider-wide monitoring snapshots for low-cost background refresh."""
+    __tablename__ = "monitoring_snapshots"
+
+    id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    provider = Column(String(50), nullable=False, index=True)
+    status = Column(String(20), default="pending", nullable=False)
+    result = Column(JSON, default=dict, nullable=False)
+    summary = Column(JSON, default=dict, nullable=False)
+    collected_at = Column(DateTime, default=datetime.utcnow, nullable=False, index=True)
+    source = Column(String(20), default="scheduled", nullable=False)
+    error = Column(Text)
+
+    def to_dict(self):
+        return {
+            "id": self.id,
+            "provider": self.provider,
+            "status": self.status,
+            "result": self.result,
+            "summary": self.summary,
+            "collected_at": _iso_utc(self.collected_at),
+            "source": self.source,
+            "error": self.error,
         }
 
 

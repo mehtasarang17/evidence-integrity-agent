@@ -35,6 +35,7 @@ from agents.cloud_compliance import (
     check_snowflake_service, SNOWFLAKE_SERVICE_PAGES,
     check_sendgrid_service, SENDGRID_SERVICE_PAGES,
 )
+from monitoring_service import get_latest_provider_snapshot, refresh_provider_snapshot
 
 
 
@@ -364,32 +365,11 @@ def monitoring_analyze():
         return jsonify({"error": provider_status.get("message", "Provider credentials are not healthy")}), 400
 
     try:
-        if provider == "aws":
-            result = check_aws_realtime_posture(
-                Config.COMPLIANCE_AWS_ACCESS_KEY,
-                Config.COMPLIANCE_AWS_SECRET_KEY,
-                Config.COMPLIANCE_AWS_REGION,
-                service,
-            )
-        elif provider == "azure":
-            result = check_azure_realtime_posture(
-                Config.COMPLIANCE_AZURE_TENANT_ID,
-                Config.COMPLIANCE_AZURE_CLIENT_ID,
-                Config.COMPLIANCE_AZURE_CLIENT_SECRET,
-                access_token=Config.COMPLIANCE_AZURE_ACCESS_TOKEN or "",
-                selected_service=service,
-            )
-        elif provider == "github":
-            result = check_github_posture(Config.COMPLIANCE_GITHUB_TOKEN)
-            result["selected_service"] = service
-        elif provider == "gitlab":
-            result = check_gitlab_realtime_posture(
-                Config.COMPLIANCE_GITLAB_TOKEN,
-                Config.COMPLIANCE_GITLAB_BASE_URL,
-                selected_service=service,
-            )
-        else:
+        if provider not in {"aws", "azure", "github", "gitlab"}:
             return jsonify({"error": f"Unsupported provider: {provider}"}), 400
+
+        result = refresh_provider_snapshot(provider, source="manual")
+        result["selected_service"] = service
 
         for ss in result.get("screenshots", []):
             if "filename" in ss:
@@ -401,6 +381,29 @@ def monitoring_analyze():
     except Exception as exc:
         logger.error(f"Unified monitoring analyze error: {exc}")
         return jsonify({"error": str(exc)}), 500
+
+
+@app.route("/api/monitoring/providers/<provider>/latest", methods=["GET"])
+def monitoring_provider_latest(provider):
+    """Return the latest cached provider-wide monitoring snapshot."""
+    if provider not in {"aws", "azure", "github", "gitlab"}:
+        return jsonify({"error": f"Unsupported provider: {provider}"}), 400
+
+    snapshot = get_latest_provider_snapshot(provider)
+    if not snapshot:
+        return jsonify({"success": True, "result": None, "snapshot": None})
+
+    return jsonify({"success": True, "result": snapshot.result, "snapshot": snapshot.to_dict()})
+
+
+@app.route("/api/monitoring/providers/<provider>/refresh", methods=["POST"])
+def monitoring_provider_refresh(provider):
+    """Trigger an immediate provider-wide monitoring refresh."""
+    if provider not in {"aws", "azure", "github", "gitlab"}:
+        return jsonify({"error": f"Unsupported provider: {provider}"}), 400
+
+    result = refresh_provider_snapshot(provider, source="manual")
+    return jsonify({"success": True, "result": result})
 
 @app.route("/api/monitoring/aws/services", methods=["GET"])
 def aws_services_list():

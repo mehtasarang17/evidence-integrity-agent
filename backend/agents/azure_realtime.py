@@ -129,6 +129,7 @@ def check_azure_realtime_service(tenant_id: str, client_id: str, client_secret: 
             "service_id": service,
             "service_name": meta["name"],
             "description": meta["description"],
+            "region_scope": "global" if meta.get("global_service") else "regional",
             "checked_at": datetime.utcnow().isoformat(),
             "mode": "api-only realtime monitor",
         },
@@ -137,9 +138,12 @@ def check_azure_realtime_service(tenant_id: str, client_id: str, client_secret: 
             "resource_count": len(items),
             "sample": _sample_items(items),
             "items_preview": _items_preview(items),
+            "available_regions": _collect_available_regions(items),
+            "regional_resource_counts": _count_items_by_region(items),
         },
         "health": _build_health(meta, items, errors),
     }
+    api_findings["integration"]["available_regions"] = api_findings["inventory"]["available_regions"]
     if errors:
         api_findings["errors"] = {"messages": errors[:10]}
 
@@ -293,7 +297,7 @@ def _sample_items(items: List[Any]) -> List[Any]:
 
 
 def _items_preview(items: List[Any]) -> List[Any]:
-    return [_serialize_preview_item(item) for item in items[:10]]
+    return [_serialize_preview_item(item) for item in items[:50]]
 
 
 def _serialize_preview_item(value: Any) -> Any:
@@ -319,6 +323,8 @@ def _attach_subscription_context(item: Any, subscription_id: str, subscription_n
     enriched.setdefault("subscriptionId", subscription_id)
     if subscription_name:
         enriched.setdefault("subscriptionName", subscription_name)
+    if enriched.get("location"):
+        enriched.setdefault("_region", str(enriched.get("location")).lower())
 
     resource_id = enriched.get("id")
     if resource_id and isinstance(resource_id, str) and "/resourceGroups/" in resource_id:
@@ -330,6 +336,22 @@ def _attach_subscription_context(item: Any, subscription_id: str, subscription_n
             pass
 
     return enriched
+
+
+def _collect_available_regions(items: List[Any]) -> List[str]:
+    return sorted({item.get("_region") for item in items if isinstance(item, dict) and item.get("_region")})
+
+
+def _count_items_by_region(items: List[Any]) -> Dict[str, int]:
+    counts: Dict[str, int] = {}
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        region_name = item.get("_region")
+        if not region_name:
+            continue
+        counts[region_name] = counts.get(region_name, 0) + 1
+    return counts
 
 
 def _build_health(meta: Dict[str, Any], items: List[Any], errors: List[str]) -> Dict[str, Any]:

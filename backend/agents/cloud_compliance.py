@@ -2448,7 +2448,7 @@ def _github_analyze_issues(headers, username, repos):
     )
 
 
-def check_github_posture(api_token):
+def check_github_posture(api_token, include_visuals=True):
     """Build a GitHub integration view across repositories, PRs, settings, vulnerabilities, and issues."""
     results = {
         "provider": "github",
@@ -2573,13 +2573,14 @@ def check_github_posture(api_token):
         ],
     }
 
-    screenshots = _take_github_screenshots(results)
-    results["screenshots"] = screenshots
+    if include_visuals:
+        screenshots = _take_github_screenshots(results)
+        results["screenshots"] = screenshots
 
-    for ss in screenshots:
-        if not os.path.exists(ss["path"]):
-            continue
-        prompt = f"""You are a security compliance auditor. Analyze this GitHub posture screenshot.
+        for ss in screenshots:
+            if not os.path.exists(ss["path"]):
+                continue
+            prompt = f"""You are a security compliance auditor. Analyze this GitHub posture screenshot.
 
 This screenshot shows the {ss['label']} view from a GitHub integration dashboard.
 
@@ -2594,10 +2595,10 @@ Respond in JSON with:
 }}
 
 Respond ONLY with JSON."""
-        try:
-            results["vision_analysis"][ss["label"]] = _analyze_screenshot_with_vision(ss["path"], prompt)
-        except Exception as exc:
-            results["vision_analysis"][ss["label"]] = {"error": str(exc)}
+            try:
+                results["vision_analysis"][ss["label"]] = _analyze_screenshot_with_vision(ss["path"], prompt)
+            except Exception as exc:
+                results["vision_analysis"][ss["label"]] = {"error": str(exc)}
 
     return results
 

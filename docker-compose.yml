@@ -55,6 +55,38 @@ services:
         condition: service_healthy
     restart: unless-stopped
 
+  monitoring-worker:
+    build: ./backend
+    command: ["python", "monitoring_worker.py"]
+    environment:
+      - DATABASE_URL=postgresql://${POSTGRES_USER:-evidence_user}:${POSTGRES_PASSWORD:-evidence_secure_pass_2024}@postgres:5432/${POSTGRES_DB:-evidence_integrity}
+      - AWS_BEARER_TOKEN_BEDROCK=${AWS_BEARER_TOKEN_BEDROCK}
+      - AWS_DEFAULT_REGION=${AWS_DEFAULT_REGION:-ap-south-1}
+      - BEDROCK_MODEL=${BEDROCK_MODEL:-apac.amazon.nova-lite-v1:0}
+      - EMBEDDING_MODEL=${EMBEDDING_MODEL:-amazon.titan-embed-text-v2:0}
+      - COMPLIANCE_AWS_ACCESS_KEY=${COMPLIANCE_AWS_ACCESS_KEY:-}
+      - COMPLIANCE_AWS_SECRET_KEY=${COMPLIANCE_AWS_SECRET_KEY:-}
+      - COMPLIANCE_AWS_REGION=${COMPLIANCE_AWS_REGION:-ap-south-1}
+      - COMPLIANCE_AWS_ACCOUNT_ID=${COMPLIANCE_AWS_ACCOUNT_ID:-}
+      - COMPLIANCE_AWS_IAM_USERNAME=${COMPLIANCE_AWS_IAM_USERNAME:-}
+      - COMPLIANCE_AWS_IAM_PASSWORD=${COMPLIANCE_AWS_IAM_PASSWORD:-}
+      - COMPLIANCE_AZURE_ACCESS_TOKEN=${COMPLIANCE_AZURE_ACCESS_TOKEN:-}
+      - COMPLIANCE_AZURE_TENANT_ID=${COMPLIANCE_AZURE_TENANT_ID:-}
+      - COMPLIANCE_AZURE_CLIENT_ID=${COMPLIANCE_AZURE_CLIENT_ID:-}
+      - COMPLIANCE_AZURE_CLIENT_SECRET=${COMPLIANCE_AZURE_CLIENT_SECRET:-}
+      - COMPLIANCE_GITHUB_TOKEN=${COMPLIANCE_GITHUB_TOKEN:-}
+      - COMPLIANCE_GITLAB_TOKEN=${COMPLIANCE_GITLAB_TOKEN:-}
+      - COMPLIANCE_GITLAB_BASE_URL=${COMPLIANCE_GITLAB_BASE_URL:-https://gitlab.com}
+      - MONITORING_REFRESH_INTERVAL_SECONDS=${MONITORING_REFRESH_INTERVAL_SECONDS:-300}
+    volumes:
+      - ./backend:/app
+      - uploads:/app/uploads
+      - screenshots:/app/screenshots
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: unless-stopped
+
   frontend:
     build: ./frontend
     ports:
