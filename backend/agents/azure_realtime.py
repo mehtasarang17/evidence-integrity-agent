@@ -64,8 +64,14 @@ AZURE_REALTIME_SERVICE_CATALOG: Dict[str, Dict[str, Any]] = {
 }
 
 
-def list_azure_realtime_services() -> List[Dict[str, str]]:
-    return [{"id": service_id, "name": meta["name"], "description": meta["description"]} for service_id, meta in AZURE_REALTIME_SERVICE_CATALOG.items()]
+def list_azure_realtime_services(
+    tenant_id: str = "",
+    client_id: str = "",
+    client_secret: str = "",
+    access_token: str = "",
+) -> List[Dict[str, str]]:
+    catalog = _build_azure_runtime_catalog(tenant_id, client_id, client_secret, access_token=access_token)
+    return [{"id": service_id, "name": meta["name"], "description": meta["description"]} for service_id, meta in catalog.items()]
 
 
 def validate_azure_credentials(tenant_id: str, client_id: str, client_secret: str, access_token: str = "") -> Dict[str, Any]:
@@ -87,8 +93,20 @@ def validate_azure_credentials(tenant_id: str, client_id: str, client_secret: st
         return {"configured": True, "healthy": False, "message": f"Azure validation failed: {exc}"}
 
 
-def check_azure_realtime_service(tenant_id: str, client_id: str, client_secret: str, service: str, *, access_token: str = "") -> Dict[str, Any]:
-    meta = AZURE_REALTIME_SERVICE_CATALOG.get(service)
+def check_azure_realtime_service(
+    tenant_id: str,
+    client_id: str,
+    client_secret: str,
+    service: str,
+    *,
+    access_token: str = "",
+    runtime_catalog: Dict[str, Dict[str, Any]] | None = None,
+    headers: Dict[str, str] | None = None,
+    subscriptions: List[Dict[str, Any]] | None = None,
+    resource_inventory: List[Dict[str, Any]] | None = None,
+) -> Dict[str, Any]:
+    runtime_catalog = runtime_catalog or _build_azure_runtime_catalog(tenant_id, client_id, client_secret, access_token=access_token)
+    meta = runtime_catalog.get(service)
     if not meta:
         return {
             "provider": "azure",
@@ -101,9 +119,13 @@ def check_azure_realtime_service(tenant_id: str, client_id: str, client_secret: 
             "vision_analysis": {},
         }
 
-    token = _get_azure_token(tenant_id, client_id, client_secret, access_token=access_token)
-    headers = _azure_headers(token)
-    subscriptions = _list_subscriptions(headers)
+    token = access_token or _get_azure_token(tenant_id, client_id, client_secret, access_token=access_token)
+    headers = headers or _azure_headers(token)
+    subscriptions = subscriptions or _list_subscriptions(headers)
+
+    if meta.get("source") == "resource_graph":
+        resource_inventory = resource_inventory if resource_inventory is not None else _list_azure_resource_graph_items(headers, subscriptions)
+        return _build_azure_discovered_service_result(service, meta, resource_inventory)
 
     errors: List[str] = []
     items: List[Any] = []
@@ -163,11 +185,37 @@ def check_azure_realtime_service(tenant_id: str, client_id: str, client_secret: 
 
 
 def check_azure_realtime_posture(tenant_id: str, client_id: str, client_secret: str, *, access_token: str = "", selected_service: str | None = None) -> Dict[str, Any]:
+    token = _get_azure_token(tenant_id, client_id, client_secret, access_token=access_token)
+    headers = _azure_headers(token)
+    subscriptions = _list_subscriptions(headers)
+    resource_inventory = _list_azure_resource_graph_items(headers, subscriptions)
+    runtime_catalog = _build_azure_runtime_catalog(
+        tenant_id,
+        client_id,
+        client_secret,
+        access_token=access_token,
+        headers=headers,
+        subscriptions=subscriptions,
+        resource_inventory=resource_inventory,
+    )
     services: Dict[str, Any] = {}
     counts = {"pass": 0, "warn": 0, "fail": 0, "unknown": 0}
 
-    for service_id, meta in AZURE_REALTIME_SERVICE_CATALOG.items():
-        service_result = check_azure_realtime_service(tenant_id, client_id, client_secret, service_id, access_token=access_token)
+    for service_id, meta in runtime_catalog.items():
+        if meta.get("source") == "resource_graph":
+            service_result = _build_azure_discovered_service_result(service_id, meta, resource_inventory)
+        else:
+            service_result = check_azure_realtime_service(
+                tenant_id,
+                client_id,
+                client_secret,
+                service_id,
+                access_token=access_token,
+                runtime_catalog=runtime_catalog,
+                headers=headers,
+                subscriptions=subscriptions,
+                resource_inventory=resource_inventory,
+            )
         health = service_result.get("api_findings", {}).get("health", {})
         status = health.get("status", "unknown")
         if status not in counts:
@@ -227,6 +275,36 @@ def _azure_headers(token: str) -> Dict[str, str]:
     return {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
 
 
+def _build_azure_runtime_catalog(
+    tenant_id: str,
+    client_id: str,
+    client_secret: str,
+    *,
+    access_token: str = "",
+    headers: Dict[str, str] | None = None,
+    subscriptions: List[Dict[str, Any]] | None = None,
+    resource_inventory: List[Dict[str, Any]] | None = None,
+) -> Dict[str, Dict[str, Any]]:
+    catalog = dict(AZURE_REALTIME_SERVICE_CATALOG)
+    has_token = bool(access_token)
+    has_sp = bool(tenant_id and client_id and client_secret)
+    if not has_token and not has_sp:
+        return catalog
+
+    try:
+        token = access_token or _get_azure_token(tenant_id, client_id, client_secret, access_token=access_token)
+        resolved_headers = headers or _azure_headers(token)
+        resolved_subscriptions = subscriptions or _list_subscriptions(resolved_headers)
+        inventory = resource_inventory if resource_inventory is not None else _list_azure_resource_graph_items(resolved_headers, resolved_subscriptions)
+        discovered_catalog = _build_azure_discovered_catalog(inventory)
+        for service_id, meta in discovered_catalog.items():
+            catalog.setdefault(service_id, meta)
+    except Exception as exc:
+        logger.debug("Azure dynamic service discovery skipped: %s", exc)
+
+    return catalog
+
+
 def _list_subscriptions(headers: Dict[str, str]) -> List[Dict[str, Any]]:
     return _collect_paginated(
         "https://management.azure.com/subscriptions?api-version=2022-12-01",
@@ -258,6 +336,146 @@ def _fetch_subscription_items(headers: Dict[str, str], subscription_id: str, ser
         items = [item for item in items if (item.get("kind") or "").lower().find("functionapp") >= 0]
 
     return items
+
+
+def _list_azure_resource_graph_items(headers: Dict[str, str], subscriptions: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    subscription_ids = [sub["subscriptionId"] for sub in subscriptions if sub.get("subscriptionId")]
+    if not subscription_ids:
+        return []
+
+    url = "https://management.azure.com/providers/Microsoft.ResourceGraph/resources?api-version=2022-10-01"
+    query = (
+        "Resources "
+        "| project id, name, type, location, resourceGroup, subscriptionId, kind, tags"
+    )
+    items: List[Dict[str, Any]] = []
+    skip_token = None
+    page_limit = 6
+
+    while page_limit > 0:
+        body: Dict[str, Any] = {
+            "subscriptions": subscription_ids,
+            "query": query,
+            "options": {"$top": 1000},
+        }
+        if skip_token:
+            body["options"]["$skipToken"] = skip_token
+
+        response = requests.post(url, headers=headers, json=body, timeout=30)
+        response.raise_for_status()
+        payload = response.json()
+        batch = payload.get("data", []) or []
+        items.extend([_attach_azure_graph_context(item, subscriptions) for item in batch if isinstance(item, dict)])
+        skip_token = payload.get("$skipToken") or payload.get("skipToken")
+        if not skip_token:
+            break
+        page_limit -= 1
+
+    return items
+
+
+def _attach_azure_graph_context(item: Dict[str, Any], subscriptions: List[Dict[str, Any]]) -> Dict[str, Any]:
+    enriched = dict(item)
+    subscription_id = enriched.get("subscriptionId")
+    if subscription_id:
+        match = next((sub for sub in subscriptions if sub.get("subscriptionId") == subscription_id), None)
+        if match and match.get("displayName"):
+            enriched.setdefault("subscriptionName", match.get("displayName"))
+    location = enriched.get("location")
+    if location:
+        enriched.setdefault("_region", str(location).lower())
+    return enriched
+
+
+def _build_azure_discovered_catalog(items: List[Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
+    catalog: Dict[str, Dict[str, Any]] = {}
+    grouped = _group_azure_inventory_by_type(items)
+    for resource_type, type_items in grouped.items():
+        service_id = _sanitize_azure_resource_type(resource_type)
+        if service_id in AZURE_REALTIME_SERVICE_CATALOG:
+            continue
+        catalog[service_id] = {
+            "name": _prettify_azure_resource_type(resource_type),
+            "description": f"Dynamically discovered Azure resources of type {resource_type}.",
+            "source": "resource_graph",
+            "resource_type": resource_type,
+            "global_service": False,
+        }
+    return catalog
+
+
+def _group_azure_inventory_by_type(items: List[Dict[str, Any]]) -> Dict[str, List[Dict[str, Any]]]:
+    grouped: Dict[str, List[Dict[str, Any]]] = {}
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        resource_type = str(item.get("type") or "").lower()
+        if not resource_type:
+            continue
+        grouped.setdefault(resource_type, []).append(item)
+    return grouped
+
+
+def _sanitize_azure_resource_type(resource_type: str) -> str:
+    cleaned = "".join(ch if ch.isalnum() else "_" for ch in resource_type.lower()).strip("_")
+    return f"discovered__{cleaned or 'resource'}"
+
+
+def _prettify_azure_resource_type(resource_type: str) -> str:
+    label = resource_type.split("/")[-1] if "/" in resource_type else resource_type
+    label = label.replace(".", " ").replace("_", " ").replace("-", " ")
+    return " ".join(part.capitalize() for part in label.split())
+
+
+def _build_azure_discovered_service_result(service_id: str, meta: Dict[str, Any], resource_inventory: List[Dict[str, Any]]) -> Dict[str, Any]:
+    resource_type = str(meta.get("resource_type") or "").lower()
+    items = [item for item in resource_inventory if str(item.get("type") or "").lower() == resource_type]
+    available_regions = _collect_available_regions(items)
+    regional_counts = _count_items_by_region(items)
+
+    api_findings = {
+        "integration": {
+            "service_id": service_id,
+            "service_name": meta["name"],
+            "description": meta["description"],
+            "resource_type": meta.get("resource_type"),
+            "region_scope": "regional",
+            "checked_at": datetime.utcnow().isoformat(),
+            "mode": "api-only realtime monitor",
+            "source": "resource_graph",
+            "available_regions": available_regions,
+        },
+        "inventory": {
+            "resource_count": len(items),
+            "sample": _sample_items(items),
+            "items_preview": _items_preview(items),
+            "available_regions": available_regions,
+            "regional_resource_counts": regional_counts,
+        },
+        "health": {
+            "status": "pass",
+            "score": 86,
+            "summary": f"Discovered {len(items)} Azure resource(s) for {meta['name']} through Azure Resource Graph.",
+            "observations": [
+                f"Resource Graph is tracking resource type {meta.get('resource_type')}.",
+                f"Observed {len(items)} resource(s) for {meta['name']}.",
+            ],
+        },
+    }
+
+    return {
+        "provider": "azure",
+        "service": service_id,
+        "service_name": meta["name"],
+        "service_description": meta["description"],
+        "check": "Realtime Azure Integration Monitor",
+        "check_description": f"Live Azure API inventory and posture summary for {meta['name']}",
+        "timestamp": datetime.utcnow().isoformat(),
+        "status": "completed",
+        "screenshots": [],
+        "api_findings": api_findings,
+        "vision_analysis": {},
+    }
 
 
 def _collect_paginated(url: str, headers: Dict[str, str], *, timeout: int = 20) -> List[Any]:

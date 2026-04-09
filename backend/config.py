@@ -1,4 +1,5 @@
 import os
+import hashlib
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -40,9 +41,28 @@ class Config:
     COMPLIANCE_AZURE_CLIENT_ID = os.getenv("COMPLIANCE_AZURE_CLIENT_ID", "")
     COMPLIANCE_AZURE_CLIENT_SECRET = os.getenv("COMPLIANCE_AZURE_CLIENT_SECRET", "")
 
+    COMPLIANCE_GCP_ACCESS_TOKEN = os.getenv("COMPLIANCE_GCP_ACCESS_TOKEN", "")
+    COMPLIANCE_GCP_SCOPE = os.getenv("COMPLIANCE_GCP_SCOPE", "")
+    COMPLIANCE_GCP_PROJECT_IDS = os.getenv("COMPLIANCE_GCP_PROJECT_IDS", "")
+
+    COMPLIANCE_IBM_CLOUD_API_KEY = os.getenv("COMPLIANCE_IBM_CLOUD_API_KEY", "")
+
+    COMPLIANCE_OCI_TENANCY_OCID = os.getenv("COMPLIANCE_OCI_TENANCY_OCID", "")
+    COMPLIANCE_OCI_USER_OCID = os.getenv("COMPLIANCE_OCI_USER_OCID", "")
+    COMPLIANCE_OCI_FINGERPRINT = os.getenv("COMPLIANCE_OCI_FINGERPRINT", "")
+    COMPLIANCE_OCI_PRIVATE_KEY = os.getenv("COMPLIANCE_OCI_PRIVATE_KEY", "")
+    COMPLIANCE_OCI_PRIVATE_KEY_PATH = os.getenv("COMPLIANCE_OCI_PRIVATE_KEY_PATH", "")
+    COMPLIANCE_OCI_PASSPHRASE = os.getenv("COMPLIANCE_OCI_PASSPHRASE", "")
+    COMPLIANCE_OCI_REGION = os.getenv("COMPLIANCE_OCI_REGION", "us-ashburn-1")
+
     COMPLIANCE_GITHUB_TOKEN = os.getenv("COMPLIANCE_GITHUB_TOKEN", "")
     COMPLIANCE_GITLAB_TOKEN = os.getenv("COMPLIANCE_GITLAB_TOKEN", "")
     COMPLIANCE_GITLAB_BASE_URL = os.getenv("COMPLIANCE_GITLAB_BASE_URL", "https://gitlab.com")
+    COMPLIANCE_SLACK_TOKEN = os.getenv("COMPLIANCE_SLACK_TOKEN", "")
+    COMPLIANCE_TEAMS_ACCESS_TOKEN = os.getenv("COMPLIANCE_TEAMS_ACCESS_TOKEN", "")
+    COMPLIANCE_TEAMS_TENANT_ID = os.getenv("COMPLIANCE_TEAMS_TENANT_ID", "")
+    COMPLIANCE_TEAMS_CLIENT_ID = os.getenv("COMPLIANCE_TEAMS_CLIENT_ID", "")
+    COMPLIANCE_TEAMS_CLIENT_SECRET = os.getenv("COMPLIANCE_TEAMS_CLIENT_SECRET", "")
     MONITORING_REFRESH_INTERVAL_SECONDS = int(os.getenv("MONITORING_REFRESH_INTERVAL_SECONDS", "300"))
     MONITORING_FRONTEND_POLL_SECONDS = int(os.getenv("MONITORING_FRONTEND_POLL_SECONDS", "30"))
 
@@ -61,3 +81,44 @@ class Config:
     @classmethod
     def is_allowed_file(cls, filename: str) -> bool:
         return "." in filename and filename.rsplit(".", 1)[1].lower() in cls.ALLOWED_EXTENSIONS
+
+
+def resolved_teams_client_credentials() -> tuple[str, str, str]:
+    tenant_id = Config.COMPLIANCE_TEAMS_TENANT_ID or Config.COMPLIANCE_AZURE_TENANT_ID
+    client_id = Config.COMPLIANCE_TEAMS_CLIENT_ID or Config.COMPLIANCE_AZURE_CLIENT_ID
+    client_secret = Config.COMPLIANCE_TEAMS_CLIENT_SECRET or Config.COMPLIANCE_AZURE_CLIENT_SECRET
+    return tenant_id, client_id, client_secret
+
+
+def provider_connection_signature(provider: str) -> str:
+    raw = _provider_signature_source(provider)
+    if not raw:
+        return ""
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:16]
+
+
+def _provider_signature_source(provider: str) -> str:
+    if provider == "aws":
+        return f"{Config.COMPLIANCE_AWS_ACCESS_KEY}|{Config.COMPLIANCE_AWS_REGION}"
+    if provider == "azure":
+        if Config.COMPLIANCE_AZURE_ACCESS_TOKEN:
+            return f"token|{Config.COMPLIANCE_AZURE_ACCESS_TOKEN}"
+        return f"sp|{Config.COMPLIANCE_AZURE_TENANT_ID}|{Config.COMPLIANCE_AZURE_CLIENT_ID}"
+    if provider == "gcp":
+        return f"{Config.COMPLIANCE_GCP_ACCESS_TOKEN}|{Config.COMPLIANCE_GCP_SCOPE}|{Config.COMPLIANCE_GCP_PROJECT_IDS}"
+    if provider == "ibm":
+        return f"{Config.COMPLIANCE_IBM_CLOUD_API_KEY}"
+    if provider == "oci":
+        return f"{Config.COMPLIANCE_OCI_TENANCY_OCID}|{Config.COMPLIANCE_OCI_USER_OCID}|{Config.COMPLIANCE_OCI_FINGERPRINT}|{Config.COMPLIANCE_OCI_REGION}"
+    if provider == "github":
+        return f"{Config.COMPLIANCE_GITHUB_TOKEN}"
+    if provider == "gitlab":
+        return f"{Config.COMPLIANCE_GITLAB_TOKEN}|{Config.COMPLIANCE_GITLAB_BASE_URL}"
+    if provider == "slack":
+        return f"{Config.COMPLIANCE_SLACK_TOKEN}"
+    if provider == "teams":
+        if Config.COMPLIANCE_TEAMS_ACCESS_TOKEN:
+            return f"token|{Config.COMPLIANCE_TEAMS_ACCESS_TOKEN}"
+        tenant_id, client_id, _ = resolved_teams_client_credentials()
+        return f"sp|{tenant_id}|{client_id}"
+    return ""

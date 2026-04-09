@@ -12,6 +12,7 @@ langsmith==0.2.10
 # AWS
 boto3==1.36.4
 botocore==1.36.4
+oci==2.169.0
 
 # Database
 sqlalchemy==2.0.36

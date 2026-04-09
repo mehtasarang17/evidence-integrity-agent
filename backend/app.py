@@ -7,7 +7,7 @@ from datetime import datetime
 from flask import Flask, request, jsonify
 from flask_cors import CORS
 
-from config import Config
+from config import Config, provider_connection_signature, resolved_teams_client_credentials
 from rag.models import init_db, AnalysisRecord, get_session
 from rag.knowledge_base import initialize_knowledge_base
 from utils.file_utils import save_uploaded_file, get_file_path, get_mime_type, is_image_file
@@ -24,11 +24,41 @@ from agents.azure_realtime import (
     list_azure_realtime_services,
     validate_azure_credentials,
 )
+from agents.gcp_realtime import (
+    GCP_REALTIME_SERVICE_CATALOG,
+    check_gcp_realtime_posture,
+    list_gcp_realtime_services,
+    validate_gcp_credentials,
+)
+from agents.ibm_realtime import (
+    IBM_REALTIME_SERVICE_CATALOG,
+    check_ibm_realtime_posture,
+    list_ibm_realtime_services,
+    validate_ibm_credentials,
+)
+from agents.oci_realtime import (
+    OCI_REALTIME_SERVICE_CATALOG,
+    check_oci_realtime_posture,
+    list_oci_realtime_services,
+    validate_oci_credentials,
+)
 from agents.gitlab_realtime import (
     GITLAB_REALTIME_SERVICE_CATALOG,
     check_gitlab_realtime_posture,
     list_gitlab_realtime_services,
     validate_gitlab_credentials,
+)
+from agents.slack_realtime import (
+    SLACK_REALTIME_SERVICE_CATALOG,
+    check_slack_realtime_posture,
+    list_slack_realtime_services,
+    validate_slack_credentials,
+)
+from agents.teams_realtime import (
+    TEAMS_REALTIME_SERVICE_CATALOG,
+    check_teams_realtime_posture,
+    list_teams_realtime_services,
+    validate_teams_credentials,
 )
 from agents.cloud_compliance import (
     check_github_posture,
@@ -63,16 +93,37 @@ GITHUB_SERVICE_CATALOG = [
     {"id": "issues", "name": "Issues", "description": "Issue backlog and labels across accessible repositories"},
 ]
 
+SUPPORTED_MONITORING_PROVIDERS = {"aws", "azure", "gcp", "ibm", "oci", "github", "gitlab", "slack", "teams"}
+
 
 def _provider_service_catalog(provider):
     if provider == "aws":
-        return list_aws_realtime_services()
+        return list_aws_realtime_services(
+            Config.COMPLIANCE_AWS_ACCESS_KEY,
+            Config.COMPLIANCE_AWS_SECRET_KEY,
+            Config.COMPLIANCE_AWS_REGION,
+        )
     if provider == "azure":
-        return list_azure_realtime_services()
+        return list_azure_realtime_services(
+            Config.COMPLIANCE_AZURE_TENANT_ID,
+            Config.COMPLIANCE_AZURE_CLIENT_ID,
+            Config.COMPLIANCE_AZURE_CLIENT_SECRET,
+            Config.COMPLIANCE_AZURE_ACCESS_TOKEN or "",
+        )
+    if provider == "gcp":
+        return list_gcp_realtime_services()
+    if provider == "ibm":
+        return list_ibm_realtime_services()
+    if provider == "oci":
+        return list_oci_realtime_services()
     if provider == "github":
         return GITHUB_SERVICE_CATALOG
     if provider == "gitlab":
         return list_gitlab_realtime_services()
+    if provider == "slack":
+        return list_slack_realtime_services()
+    if provider == "teams":
+        return list_teams_realtime_services()
     return []
 
 
@@ -116,6 +167,32 @@ def _validate_github_provider():
         return {"configured": True, "healthy": False, "message": f"GitHub validation failed: {exc}"}
 
 
+def _validate_gcp_provider():
+    return validate_gcp_credentials(
+        Config.COMPLIANCE_GCP_ACCESS_TOKEN,
+        Config.COMPLIANCE_GCP_SCOPE,
+        Config.COMPLIANCE_GCP_PROJECT_IDS,
+    )
+
+
+def _validate_ibm_provider():
+    return validate_ibm_credentials(
+        Config.COMPLIANCE_IBM_CLOUD_API_KEY,
+    )
+
+
+def _validate_oci_provider():
+    return validate_oci_credentials(
+        Config.COMPLIANCE_OCI_TENANCY_OCID,
+        Config.COMPLIANCE_OCI_USER_OCID,
+        Config.COMPLIANCE_OCI_FINGERPRINT,
+        Config.COMPLIANCE_OCI_PRIVATE_KEY,
+        Config.COMPLIANCE_OCI_REGION,
+        passphrase=Config.COMPLIANCE_OCI_PASSPHRASE,
+        private_key_path=Config.COMPLIANCE_OCI_PRIVATE_KEY_PATH,
+    )
+
+
 def _validate_gitlab_provider():
     return validate_gitlab_credentials(
         Config.COMPLIANCE_GITLAB_TOKEN,
@@ -123,13 +200,37 @@ def _validate_gitlab_provider():
     )
 
 
+def _validate_slack_provider():
+    return validate_slack_credentials(
+        Config.COMPLIANCE_SLACK_TOKEN,
+    )
+
+
+def _validate_teams_provider():
+    tenant_id, client_id, client_secret = resolved_teams_client_credentials()
+    return validate_teams_credentials(
+        Config.COMPLIANCE_TEAMS_ACCESS_TOKEN,
+        tenant_id,
+        client_id,
+        client_secret,
+    )
+
+
 def _provider_statuses():
-    return {
+    statuses = {
         "aws": _validate_aws_provider(),
         "azure": _validate_azure_provider(),
+        "gcp": _validate_gcp_provider(),
+        "ibm": _validate_ibm_provider(),
+        "oci": _validate_oci_provider(),
         "github": _validate_github_provider(),
         "gitlab": _validate_gitlab_provider(),
+        "slack": _validate_slack_provider(),
+        "teams": _validate_teams_provider(),
     }
+    for provider, status in statuses.items():
+        status["connection_signature"] = provider_connection_signature(provider)
+    return statuses
 
 
 def initialize():
@@ -365,7 +466,7 @@ def monitoring_analyze():
         return jsonify({"error": provider_status.get("message", "Provider credentials are not healthy")}), 400
 
     try:
-        if provider not in {"aws", "azure", "github", "gitlab"}:
+        if provider not in SUPPORTED_MONITORING_PROVIDERS:
             return jsonify({"error": f"Unsupported provider: {provider}"}), 400
 
         result = refresh_provider_snapshot(provider, source="manual")
@@ -386,7 +487,7 @@ def monitoring_analyze():
 @app.route("/api/monitoring/providers/<provider>/latest", methods=["GET"])
 def monitoring_provider_latest(provider):
     """Return the latest cached provider-wide monitoring snapshot."""
-    if provider not in {"aws", "azure", "github", "gitlab"}:
+    if provider not in SUPPORTED_MONITORING_PROVIDERS:
         return jsonify({"error": f"Unsupported provider: {provider}"}), 400
 
     snapshot = get_latest_provider_snapshot(provider)
@@ -399,7 +500,7 @@ def monitoring_provider_latest(provider):
 @app.route("/api/monitoring/providers/<provider>/refresh", methods=["POST"])
 def monitoring_provider_refresh(provider):
     """Trigger an immediate provider-wide monitoring refresh."""
-    if provider not in {"aws", "azure", "github", "gitlab"}:
+    if provider not in SUPPORTED_MONITORING_PROVIDERS:
         return jsonify({"error": f"Unsupported provider: {provider}"}), 400
 
     result = refresh_provider_snapshot(provider, source="manual")
@@ -408,13 +509,28 @@ def monitoring_provider_refresh(provider):
 @app.route("/api/monitoring/aws/services", methods=["GET"])
 def aws_services_list():
     """Return the list of supported AWS services for the service selector."""
-    return jsonify({"success": True, "services": list_aws_realtime_services()})
+    return jsonify({
+        "success": True,
+        "services": list_aws_realtime_services(
+            Config.COMPLIANCE_AWS_ACCESS_KEY,
+            Config.COMPLIANCE_AWS_SECRET_KEY,
+            Config.COMPLIANCE_AWS_REGION,
+        ),
+    })
 
 
 @app.route("/api/monitoring/aws/checks/<service_id>", methods=["GET"])
 def aws_checks_list(service_id):
     """Return a single API-based monitor check for a given AWS integration."""
-    service_info = AWS_REALTIME_SERVICE_CATALOG.get(service_id)
+    runtime_catalog = {
+        service["id"]: service
+        for service in list_aws_realtime_services(
+            Config.COMPLIANCE_AWS_ACCESS_KEY,
+            Config.COMPLIANCE_AWS_SECRET_KEY,
+            Config.COMPLIANCE_AWS_REGION,
+        )
+    }
+    service_info = runtime_catalog.get(service_id) or AWS_REALTIME_SERVICE_CATALOG.get(service_id)
     if not service_info:
         return jsonify({"error": f"Unknown service: {service_id}"}), 404
     checks = [{
@@ -499,6 +615,112 @@ def azure_monitoring():
         return jsonify({"error": str(e)}), 500
 
 
+@app.route("/api/monitoring/gcp/services", methods=["GET"])
+def gcp_services_list():
+    """Return the list of supported GCP services for the service selector."""
+    return jsonify({"success": True, "services": list_gcp_realtime_services()})
+
+
+@app.route("/api/monitoring/gcp/checks/<service_id>", methods=["GET"])
+def gcp_checks_list(service_id):
+    """Return a single API-based monitor check for a given GCP integration."""
+    service_info = GCP_REALTIME_SERVICE_CATALOG.get(service_id)
+    if not service_info:
+        return jsonify({"error": f"Unknown service: {service_id}"}), 404
+    checks = [{
+        "id": "realtime_monitor",
+        "name": "Realtime Monitor",
+        "description": f"Live GCP asset inventory and posture summary for {service_info['name']}",
+    }]
+    return jsonify({"success": True, "checks": checks})
+
+
+@app.route("/api/monitoring/gcp", methods=["POST"])
+def gcp_monitoring():
+    """Run GCP realtime service monitoring using an access token only."""
+    data = request.get_json() or {}
+
+    access_token = data.get("access_token") or Config.COMPLIANCE_GCP_ACCESS_TOKEN
+    scope = data.get("scope") or Config.COMPLIANCE_GCP_SCOPE
+    project_ids = data.get("project_ids") or Config.COMPLIANCE_GCP_PROJECT_IDS
+    service = data.get("service")
+
+    if not access_token:
+        return jsonify({"error": "access_token is required"}), 400
+    if not service:
+        return jsonify({"error": "service is required"}), 400
+
+    try:
+        logger.info(f"Starting GCP realtime posture scan (selected service: {service})")
+        result = check_gcp_realtime_posture(
+            access_token,
+            scope=scope,
+            project_ids=project_ids,
+            selected_service=service,
+        )
+        return jsonify({"success": True, "result": result})
+    except Exception as e:
+        logger.error(f"GCP monitoring error: {e}")
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/monitoring/oci/services", methods=["GET"])
+def oci_services_list():
+    """Return the list of supported OCI services for the service selector."""
+    return jsonify({"success": True, "services": list_oci_realtime_services()})
+
+
+@app.route("/api/monitoring/oci/checks/<service_id>", methods=["GET"])
+def oci_checks_list(service_id):
+    """Return a single API-based monitor check for a given OCI integration."""
+    service_info = OCI_REALTIME_SERVICE_CATALOG.get(service_id)
+    if not service_info:
+        return jsonify({"error": f"Unknown service: {service_id}"}), 404
+    checks = [{
+        "id": "realtime_monitor",
+        "name": "Realtime Monitor",
+        "description": f"Live OCI Resource Search inventory and posture summary for {service_info['name']}",
+    }]
+    return jsonify({"success": True, "checks": checks})
+
+
+@app.route("/api/monitoring/oci", methods=["POST"])
+def oci_monitoring():
+    """Run OCI realtime service monitoring using OCI API signing credentials."""
+    data = request.get_json() or {}
+
+    tenancy_ocid = data.get("tenancy_ocid") or Config.COMPLIANCE_OCI_TENANCY_OCID
+    user_ocid = data.get("user_ocid") or Config.COMPLIANCE_OCI_USER_OCID
+    fingerprint = data.get("fingerprint") or Config.COMPLIANCE_OCI_FINGERPRINT
+    private_key = data.get("private_key") or Config.COMPLIANCE_OCI_PRIVATE_KEY
+    private_key_path = data.get("private_key_path") or Config.COMPLIANCE_OCI_PRIVATE_KEY_PATH
+    passphrase = data.get("passphrase") or Config.COMPLIANCE_OCI_PASSPHRASE
+    region = data.get("region") or Config.COMPLIANCE_OCI_REGION
+    service = data.get("service")
+
+    if not tenancy_ocid or not user_ocid or not fingerprint or not region or not (private_key or private_key_path):
+        return jsonify({"error": "tenancy_ocid, user_ocid, fingerprint, region, and private_key/private_key_path are required"}), 400
+    if not service:
+        return jsonify({"error": "service is required"}), 400
+
+    try:
+        logger.info(f"Starting OCI realtime posture scan (selected service: {service})")
+        result = check_oci_realtime_posture(
+            tenancy_ocid,
+            user_ocid,
+            fingerprint,
+            private_key,
+            region,
+            passphrase=passphrase,
+            private_key_path=private_key_path,
+            selected_service=service,
+        )
+        return jsonify({"success": True, "result": result})
+    except Exception as e:
+        logger.error(f"OCI monitoring error: {e}")
+        return jsonify({"error": str(e)}), 500
+
+
 @app.route("/api/monitoring/github", methods=["POST"])
 def github_monitoring():
     """Run GitHub realtime service monitoring."""
@@ -544,6 +766,100 @@ def gitlab_monitoring():
         return jsonify({"success": True, "result": result})
     except Exception as e:
         logger.error(f"GitLab monitoring error: {e}")
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/monitoring/slack/services", methods=["GET"])
+def slack_services_list():
+    """Return the list of supported Slack services for the service selector."""
+    return jsonify({"success": True, "services": list_slack_realtime_services()})
+
+
+@app.route("/api/monitoring/slack/checks/<service_id>", methods=["GET"])
+def slack_checks_list(service_id):
+    """Return a single API-based monitor check for a given Slack integration."""
+    service_info = SLACK_REALTIME_SERVICE_CATALOG.get(service_id)
+    if not service_info:
+        return jsonify({"error": f"Unknown service: {service_id}"}), 404
+    checks = [{
+        "id": "realtime_monitor",
+        "name": "Realtime Monitor",
+        "description": f"Live Slack API inventory and posture summary for {service_info['name']}",
+    }]
+    return jsonify({"success": True, "checks": checks})
+
+
+@app.route("/api/monitoring/slack", methods=["POST"])
+def slack_monitoring():
+    """Run Slack realtime service monitoring using an API token only."""
+    data = request.get_json() or {}
+
+    api_token = data.get("api_token") or Config.COMPLIANCE_SLACK_TOKEN
+    service = data.get("service")
+
+    if not api_token:
+        return jsonify({"error": "api_token is required"}), 400
+    if not service:
+        return jsonify({"error": "service is required"}), 400
+
+    try:
+        logger.info(f"Starting Slack realtime posture scan (selected service: {service})")
+        result = check_slack_realtime_posture(api_token, selected_service=service)
+        return jsonify({"success": True, "result": result})
+    except Exception as e:
+        logger.error(f"Slack monitoring error: {e}")
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/monitoring/teams/services", methods=["GET"])
+def teams_services_list():
+    """Return the list of supported Teams DLP services for the service selector."""
+    return jsonify({"success": True, "services": list_teams_realtime_services()})
+
+
+@app.route("/api/monitoring/teams/checks/<service_id>", methods=["GET"])
+def teams_checks_list(service_id):
+    """Return a single API-based monitor check for a given Teams DLP integration."""
+    service_info = TEAMS_REALTIME_SERVICE_CATALOG.get(service_id)
+    if not service_info:
+        return jsonify({"error": f"Unknown service: {service_id}"}), 404
+    checks = [{
+        "id": "realtime_monitor",
+        "name": "Realtime Monitor",
+        "description": f"Live Microsoft Purview DLP snapshot summary for {service_info['name']}",
+    }]
+    return jsonify({"success": True, "checks": checks})
+
+
+@app.route("/api/monitoring/teams", methods=["POST"])
+def teams_monitoring():
+    """Run Teams DLP monitoring using a Microsoft Graph access token or app credentials."""
+    data = request.get_json() or {}
+
+    access_token = data.get("access_token") or Config.COMPLIANCE_TEAMS_ACCESS_TOKEN
+    default_tenant_id, default_client_id, default_client_secret = resolved_teams_client_credentials()
+    tenant_id = data.get("tenant_id") or default_tenant_id
+    client_id = data.get("client_id") or default_client_id
+    client_secret = data.get("client_secret") or default_client_secret
+    service = data.get("service")
+
+    if not access_token and (not tenant_id or not client_id or not client_secret):
+        return jsonify({"error": "Either access_token or (tenant_id, client_id, client_secret) are required"}), 400
+    if not service:
+        return jsonify({"error": "service is required"}), 400
+
+    try:
+        logger.info(f"Starting Teams DLP posture scan (selected service: {service})")
+        result = check_teams_realtime_posture(
+            access_token=access_token or "",
+            tenant_id=tenant_id,
+            client_id=client_id,
+            client_secret=client_secret,
+            selected_service=service,
+        )
+        return jsonify({"success": True, "result": result})
+    except Exception as e:
+        logger.error(f"Teams DLP monitoring error: {e}")
         return jsonify({"error": str(e)}), 500
 
 

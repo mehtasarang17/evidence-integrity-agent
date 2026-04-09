@@ -8,7 +8,7 @@
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&family=JetBrains+Mono:wght@400;500;600&family=Space+Grotesk:wght@500;700&display=swap" rel="stylesheet">
-    <link rel="stylesheet" href="css/styles.css?v=20260404-monitoring-demo">
+    <link rel="stylesheet" href="css/styles.css?v=20260408-teams-dlp">
 </head>
 <body>
     <!-- Particle Canvas Background -->
@@ -206,7 +206,7 @@
                         <span class="title-line">Realtime</span>
                         <span class="title-line gradient-text">Service Monitoring</span>
                     </h1>
-                    <p class="hero-subtitle">Monitor live service activity and connected integrations across AWS, Azure, GitHub, and GitLab using API-driven collection and AI-assisted evidence review.</p>
+                    <p class="hero-subtitle">Monitor live service activity and connected integrations across AWS, Azure, GCP, IBM Cloud, Oracle Cloud, GitHub, GitLab, Slack, and Teams DLP using API-driven collection and AI-assisted evidence review.</p>
                     <div class="cc-hero-badges">
                         <span class="cc-hero-badge">Continuous snapshots</span>
                         <span class="cc-hero-badge">API-backed inventory</span>
@@ -223,7 +223,7 @@
                     <div class="cc-hero-metrics">
                         <article class="cc-hero-metric">
                             <span>Providers online</span>
-                            <strong id="cc-hero-online-count">0/4</strong>
+                            <strong id="cc-hero-online-count">0/9</strong>
                         </article>
                         <article class="cc-hero-metric">
                             <span>Service catalog</span>
@@ -259,6 +259,46 @@
                         <span class="cc-tab__check" id="tab-azure-status">Checking credentials…</span>
                     </div>
                 </button>
+                <button class="cc-tab" data-provider="gcp" id="tab-gcp">
+                    <div class="cc-tab__icon-wrap cc-tab__icon-wrap--gcp">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+                            <path d="M12 3a9 9 0 1 0 8.94 10H12v-2.5h11A11 11 0 1 1 12 1c2.9 0 5.54 1.12 7.52 2.96l-1.8 1.8A8.46 8.46 0 0 0 12 3z"/>
+                            <path d="M13.5 12h6"/>
+                        </svg>
+                    </div>
+                    <div class="cc-tab__text">
+                        <span class="cc-tab__name">GCP</span>
+                        <span class="cc-tab__check" id="tab-gcp-status">Checking credentialsâ€¦</span>
+                    </div>
+                </button>
+                <button class="cc-tab" data-provider="ibm" id="tab-ibm">
+                    <div class="cc-tab__icon-wrap cc-tab__icon-wrap--ibm">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+                            <path d="M4 7.5h16"/>
+                            <path d="M4 12h16"/>
+                            <path d="M4 16.5h16"/>
+                            <path d="M6 5.5h12"/>
+                            <path d="M6 18.5h12"/>
+                        </svg>
+                    </div>
+                    <div class="cc-tab__text">
+                        <span class="cc-tab__name">IBM Cloud</span>
+                        <span class="cc-tab__check" id="tab-ibm-status">Checking credentials...</span>
+                    </div>
+                </button>
+                <button class="cc-tab" data-provider="oci" id="tab-oci">
+                    <div class="cc-tab__icon-wrap cc-tab__icon-wrap--oci">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+                            <ellipse cx="12" cy="7" rx="6.5" ry="3.5"/>
+                            <path d="M5.5 7v6c0 1.93 2.91 3.5 6.5 3.5s6.5-1.57 6.5-3.5V7"/>
+                            <path d="M8 19.5c1.15.33 2.5.5 4 .5 3.59 0 6.5-1.57 6.5-3.5"/>
+                        </svg>
+                    </div>
+                    <div class="cc-tab__text">
+                        <span class="cc-tab__name">Oracle Cloud</span>
+                        <span class="cc-tab__check" id="tab-oci-status">Checking credentials...</span>
+                    </div>
+                </button>
                 <button class="cc-tab" data-provider="github" id="tab-github">
                     <div class="cc-tab__icon-wrap cc-tab__icon-wrap--github">
                         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M9 19c-5 1.5-5-2.5-7-3m14 6v-3.87a3.37 3.37 0 00-.94-2.61c3.14-.35 6.44-1.54 6.44-7A5.44 5.44 0 0020 4.77 5.07 5.07 0 0019.91 1S18.73.65 16 2.48a13.38 13.38 0 00-7 0C6.27.65 5.09 1 5.09 1A5.07 5.07 0 005 4.77a5.44 5.44 0 00-1.5 3.78c0 5.42 3.3 6.61 6.44 7A3.37 3.37 0 009 18.13V22"/></svg>
@@ -275,6 +315,24 @@
                     <div class="cc-tab__text">
                         <span class="cc-tab__name">GitLab</span>
                         <span class="cc-tab__check" id="tab-gitlab-status">Checking credentials…</span>
+                    </div>
+                </button>
+                <button class="cc-tab" data-provider="slack" id="tab-slack">
+                    <div class="cc-tab__icon-wrap cc-tab__icon-wrap--slack">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M8 4a2 2 0 10-4 0 2 2 0 004 0z"/><path d="M8 4v6"/><path d="M8 14a2 2 0 10-4 0 2 2 0 004 0z"/><path d="M8 14h6"/><path d="M16 20a2 2 0 104 0 2 2 0 00-4 0z"/><path d="M16 20v-6"/><path d="M16 10a2 2 0 104 0 2 2 0 00-4 0z"/><path d="M16 10h-6"/></svg>
+                    </div>
+                    <div class="cc-tab__text">
+                        <span class="cc-tab__name">Slack</span>
+                        <span class="cc-tab__check" id="tab-slack-status">Checking credentials...</span>
+                    </div>
+                </button>
+                <button class="cc-tab" data-provider="teams" id="tab-teams">
+                    <div class="cc-tab__icon-wrap cc-tab__icon-wrap--teams">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M4 6h10v12H4z"/><path d="M8 10h2"/><path d="M9 10v6"/><path d="M15 8h5v8h-5"/><circle cx="17.5" cy="12" r="1.25"/></svg>
+                    </div>
+                    <div class="cc-tab__text">
+                        <span class="cc-tab__name">Teams DLP</span>
+                        <span class="cc-tab__check" id="tab-teams-status">Checking credentials...</span>
                     </div>
                 </button>
                 </div>
@@ -350,14 +408,6 @@
                                 <button class="btn btn-ghost" id="btn-new-compliance">
                                     <span>+</span> New Monitor
                                 </button>
-                            </div>
-
-                            <div class="cc-status-banner" id="compliance-status-banner">
-                                <div class="cc-status-banner__icon" id="compliance-status-icon">?</div>
-                                <div class="cc-status-banner__details">
-                                    <h3 id="compliance-status-text">Checking...</h3>
-                                    <p id="compliance-status-desc">Monitoring in progress</p>
-                                </div>
                             </div>
 
                             <div class="result-card full-width github-dashboard-card" id="github-dashboard-card" style="display: none;">
@@ -548,7 +598,7 @@
     <script src="js/animations.js?v=20260404-monitoring-demo"></script>
     <script src="js/upload.js?v=20260404-monitoring-demo"></script>
     <script src="js/dashboard.js?v=20260404-monitoring-demo"></script>
-    <script src="js/compliance.js?v=20260404-monitoring-demo"></script>
+    <script src="js/compliance.js?v=20260408-teams-dlp"></script>
     <script src="js/app.js?v=20260404-monitoring-demo"></script>
 </body>
 </html>

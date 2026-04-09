@@ -6,16 +6,21 @@ import logging
 from datetime import datetime, timezone
 from typing import Any, Dict, Optional
 
-from config import Config
+from config import Config, provider_connection_signature, resolved_teams_client_credentials
 from rag.models import MonitoringSnapshot, get_session
 from agents.aws_realtime import check_aws_realtime_posture
 from agents.azure_realtime import check_azure_realtime_posture
+from agents.gcp_realtime import check_gcp_realtime_posture
+from agents.ibm_realtime import check_ibm_realtime_posture
+from agents.oci_realtime import check_oci_realtime_posture
+from agents.slack_realtime import check_slack_realtime_posture
+from agents.teams_realtime import check_teams_realtime_posture
 from agents.cloud_compliance import check_github_posture
 from agents.gitlab_realtime import check_gitlab_realtime_posture
 
 logger = logging.getLogger(__name__)
 
-MONITORED_PROVIDERS = ("aws", "azure", "github", "gitlab")
+MONITORED_PROVIDERS = ("aws", "azure", "gcp", "ibm", "oci", "github", "gitlab", "slack", "teams")
 
 
 def _utc_iso_now() -> str:
@@ -36,6 +41,26 @@ def collect_provider_snapshot(provider: str) -> Dict[str, Any]:
             Config.COMPLIANCE_AZURE_CLIENT_SECRET,
             access_token=Config.COMPLIANCE_AZURE_ACCESS_TOKEN or "",
         )
+    if provider == "gcp":
+        return check_gcp_realtime_posture(
+            Config.COMPLIANCE_GCP_ACCESS_TOKEN,
+            scope=Config.COMPLIANCE_GCP_SCOPE,
+            project_ids=Config.COMPLIANCE_GCP_PROJECT_IDS,
+        )
+    if provider == "ibm":
+        return check_ibm_realtime_posture(
+            Config.COMPLIANCE_IBM_CLOUD_API_KEY,
+        )
+    if provider == "oci":
+        return check_oci_realtime_posture(
+            Config.COMPLIANCE_OCI_TENANCY_OCID,
+            Config.COMPLIANCE_OCI_USER_OCID,
+            Config.COMPLIANCE_OCI_FINGERPRINT,
+            Config.COMPLIANCE_OCI_PRIVATE_KEY,
+            Config.COMPLIANCE_OCI_REGION,
+            passphrase=Config.COMPLIANCE_OCI_PASSPHRASE,
+            private_key_path=Config.COMPLIANCE_OCI_PRIVATE_KEY_PATH,
+        )
     if provider == "github":
         return check_github_posture(Config.COMPLIANCE_GITHUB_TOKEN, include_visuals=False)
     if provider == "gitlab":
@@ -43,10 +68,23 @@ def collect_provider_snapshot(provider: str) -> Dict[str, Any]:
             Config.COMPLIANCE_GITLAB_TOKEN,
             Config.COMPLIANCE_GITLAB_BASE_URL,
         )
+    if provider == "slack":
+        return check_slack_realtime_posture(
+            Config.COMPLIANCE_SLACK_TOKEN,
+        )
+    if provider == "teams":
+        tenant_id, client_id, client_secret = resolved_teams_client_credentials()
+        return check_teams_realtime_posture(
+            access_token=Config.COMPLIANCE_TEAMS_ACCESS_TOKEN,
+            tenant_id=tenant_id,
+            client_id=client_id,
+            client_secret=client_secret,
+        )
     raise ValueError(f"Unsupported provider: {provider}")
 
 
 def refresh_provider_snapshot(provider: str, *, source: str = "manual") -> Dict[str, Any]:
+    connection_signature = provider_connection_signature(provider)
     try:
         result = collect_provider_snapshot(provider)
         status = result.get("status", "completed")
@@ -63,6 +101,7 @@ def refresh_provider_snapshot(provider: str, *, source: str = "manual") -> Dict[
         status = "error"
         error = str(exc)
 
+    result["connection_signature"] = connection_signature
     result["snapshot_collected_at"] = _utc_iso_now()
     result["snapshot_source"] = source
     snapshot = _save_snapshot(provider, result, status=status, source=source, error=error)
@@ -119,10 +158,30 @@ def _provider_configured(provider: str) -> bool:
             Config.COMPLIANCE_AZURE_ACCESS_TOKEN
             or (Config.COMPLIANCE_AZURE_TENANT_ID and Config.COMPLIANCE_AZURE_CLIENT_ID and Config.COMPLIANCE_AZURE_CLIENT_SECRET)
         )
+    if provider == "gcp":
+        return bool(Config.COMPLIANCE_GCP_ACCESS_TOKEN)
+    if provider == "ibm":
+        return bool(Config.COMPLIANCE_IBM_CLOUD_API_KEY)
+    if provider == "oci":
+        return bool(
+            Config.COMPLIANCE_OCI_TENANCY_OCID
+            and Config.COMPLIANCE_OCI_USER_OCID
+            and Config.COMPLIANCE_OCI_FINGERPRINT
+            and Config.COMPLIANCE_OCI_REGION
+            and (Config.COMPLIANCE_OCI_PRIVATE_KEY or Config.COMPLIANCE_OCI_PRIVATE_KEY_PATH)
+        )
     if provider == "github":
         return bool(Config.COMPLIANCE_GITHUB_TOKEN)
     if provider == "gitlab":
         return bool(Config.COMPLIANCE_GITLAB_TOKEN)
+    if provider == "slack":
+        return bool(Config.COMPLIANCE_SLACK_TOKEN)
+    if provider == "teams":
+        tenant_id, client_id, client_secret = resolved_teams_client_credentials()
+        return bool(
+            Config.COMPLIANCE_TEAMS_ACCESS_TOKEN
+            or (tenant_id and client_id and client_secret)
+        )
     return False
 
 

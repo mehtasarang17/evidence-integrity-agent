@@ -13,6 +13,7 @@ const Compliance = (() => {
     let activeDashboardKey = null;
     let providerResults = {};
     let providerSnapshotMeta = {};
+    let snapshotRefreshPromises = {};
     let _autoRefreshTimer = null;
 
     let _lbImages = [];
@@ -21,8 +22,13 @@ const Compliance = (() => {
     const PROVIDER_LABELS = {
         aws: 'AWS',
         azure: 'Azure',
+        gcp: 'GCP',
+        ibm: 'IBM Cloud',
+        oci: 'Oracle Cloud',
         github: 'GitHub',
         gitlab: 'GitLab',
+        slack: 'Slack',
+        teams: 'Teams DLP',
     };
     const SERVICE_PAGE_SIZE = 10;
 
@@ -54,7 +60,7 @@ const Compliance = (() => {
         });
     }
 
-    async function loadProviderStatuses() {
+    async function loadProviderStatuses(options = {}) {
         try {
             const response = await fetch('/api/monitoring/providers/status');
             const data = await response.json();
@@ -63,7 +69,9 @@ const Compliance = (() => {
             _renderProviderStatuses();
         } catch (err) {
             console.error('Provider status load failed:', err);
-            App.showToast('Failed to load provider connections', 'error');
+            if (!options.silent) {
+                App.showToast('Failed to load provider connections', 'error');
+            }
         }
     }
 
@@ -136,7 +144,7 @@ const Compliance = (() => {
         if (monitoringSection) {
             monitoringSection.dataset.provider = provider;
         }
-        if (provider !== 'aws' && provider !== 'azure') {
+        if (provider !== 'aws' && provider !== 'azure' && provider !== 'gcp' && provider !== 'ibm' && provider !== 'oci') {
             _hideRegionFilter();
         }
         document.querySelectorAll('.cc-tab').forEach(tab => tab.classList.toggle('cc-tab--active', tab.dataset.provider === provider));
@@ -145,6 +153,7 @@ const Compliance = (() => {
         document.getElementById('cc-tabs').style.pointerEvents = '';
         document.getElementById('cc-tabs').style.opacity = '';
 
+        await loadProviderStatuses({ silent: true });
         _renderProviderHero();
         if (!servicesByProvider[provider]) {
             await _loadServices(provider);
@@ -153,6 +162,9 @@ const Compliance = (() => {
             _renderServiceList(provider);
         }
         await _loadLatestSnapshot(provider);
+        if (_providerNeedsFreshSnapshot(provider)) {
+            await _refreshProviderSnapshot(provider, { silent: true });
+        }
 
         if (provider === 'github') {
             if (providerResults.github) {
@@ -172,9 +184,39 @@ const Compliance = (() => {
             } else {
                 document.getElementById('compliance-results').style.display = 'none';
             }
+        } else if (provider === 'gcp') {
+            if (providerResults.gcp) {
+                _renderCachedGcpResult();
+            } else {
+                document.getElementById('compliance-results').style.display = 'none';
+            }
+        } else if (provider === 'ibm') {
+            if (providerResults.ibm) {
+                _renderCachedIbmResult();
+            } else {
+                document.getElementById('compliance-results').style.display = 'none';
+            }
+        } else if (provider === 'oci') {
+            if (providerResults.oci) {
+                _renderCachedOciResult();
+            } else {
+                document.getElementById('compliance-results').style.display = 'none';
+            }
         } else if (provider === 'gitlab') {
             if (providerResults.gitlab) {
                 _renderCachedGitlabResult();
+            } else {
+                document.getElementById('compliance-results').style.display = 'none';
+            }
+        } else if (provider === 'slack') {
+            if (providerResults.slack) {
+                _renderCachedSlackResult();
+            } else {
+                document.getElementById('compliance-results').style.display = 'none';
+            }
+        } else if (provider === 'teams') {
+            if (providerResults.teams) {
+                _renderCachedTeamsResult();
             } else {
                 document.getElementById('compliance-results').style.display = 'none';
             }
@@ -234,24 +276,89 @@ const Compliance = (() => {
             _renderHeroPanel();
 
             if (provider === activeProvider && (changed || options.forceRender)) {
-                if (provider === 'github') _renderCachedGithubResult();
-                if (provider === 'aws') _renderCachedAwsResult();
-                if (provider === 'azure') _renderCachedAzureResult();
-                if (provider === 'gitlab') _renderCachedGitlabResult();
-            }
-            return changed;
+            if (provider === 'github') _renderCachedGithubResult();
+            if (provider === 'aws') _renderCachedAwsResult();
+            if (provider === 'azure') _renderCachedAzureResult();
+            if (provider === 'gcp') _renderCachedGcpResult();
+            if (provider === 'ibm') _renderCachedIbmResult();
+            if (provider === 'oci') _renderCachedOciResult();
+            if (provider === 'gitlab') _renderCachedGitlabResult();
+            if (provider === 'slack') _renderCachedSlackResult();
+            if (provider === 'teams') _renderCachedTeamsResult();
+        }
+        return changed;
         } catch (err) {
             console.error(`Latest snapshot load failed for ${provider}:`, err);
             return false;
         }
     }
 
+    function _providerNeedsFreshSnapshot(provider) {
+        const status = providerStatuses[provider];
+        if (!status?.healthy) return false;
+
+        const cached = providerResults[provider];
+        if (!cached) return true;
+        if (String(cached.status || '').toLowerCase() === 'error') return true;
+
+        const liveSignature = status.connection_signature || '';
+        const cachedSignature = cached.connection_signature || '';
+        if (!liveSignature) return false;
+        if (!cachedSignature) return true;
+        return liveSignature !== cachedSignature;
+    }
+
+    async function _refreshProviderSnapshot(provider, options = {}) {
+        if (snapshotRefreshPromises[provider]) {
+            return snapshotRefreshPromises[provider];
+        }
+
+        snapshotRefreshPromises[provider] = (async () => {
+            try {
+                const response = await fetch(`/api/monitoring/providers/${provider}/refresh`, {
+                    method: 'POST',
+                });
+                const data = await response.json();
+                if (!data.success || !data.result) {
+                    throw new Error(data.error || `Failed to refresh ${PROVIDER_LABELS[provider] || provider}`);
+                }
+
+                providerResults[provider] = data.result;
+                providerSnapshotMeta[provider] = {
+                    id: data.result.snapshot_id,
+                    collected_at: data.result.snapshot_collected_at,
+                    source: data.result.snapshot_source,
+                };
+                _renderHeroPanel();
+
+                if (provider === activeProvider) {
+                    _rerenderActiveProvider();
+                }
+                return true;
+            } catch (err) {
+                console.error(`Snapshot refresh failed for ${provider}:`, err);
+                if (!options.silent) {
+                    App.showToast(`Failed to refresh ${PROVIDER_LABELS[provider] || provider}`, 'error');
+                }
+                return false;
+            } finally {
+                delete snapshotRefreshPromises[provider];
+            }
+        })();
+
+        return snapshotRefreshPromises[provider];
+    }
+
     function _startAutoRefresh() {
         if (_autoRefreshTimer) clearInterval(_autoRefreshTimer);
-        _autoRefreshTimer = setInterval(() => {
+        _autoRefreshTimer = setInterval(async () => {
             const complianceSection = document.getElementById('section-compliance');
             if (!complianceSection?.classList.contains('active')) return;
-            _loadLatestSnapshot(activeProvider, { forceRender: Boolean(providerResults[activeProvider]) });
+            await loadProviderStatuses({ silent: true });
+            await _loadLatestSnapshot(activeProvider, { forceRender: Boolean(providerResults[activeProvider]) });
+            if (_providerNeedsFreshSnapshot(activeProvider)) {
+                await _refreshProviderSnapshot(activeProvider, { silent: true });
+            }
         }, 30000);
     }
 
@@ -318,8 +425,23 @@ const Compliance = (() => {
         if (activeProvider === 'azure' && providerResults.azure) {
             _renderCachedAzureResult();
         }
+        if (activeProvider === 'gcp' && providerResults.gcp) {
+            _renderCachedGcpResult();
+        }
+        if (activeProvider === 'ibm' && providerResults.ibm) {
+            _renderCachedIbmResult();
+        }
+        if (activeProvider === 'oci' && providerResults.oci) {
+            _renderCachedOciResult();
+        }
         if (activeProvider === 'gitlab' && providerResults.gitlab) {
             _renderCachedGitlabResult();
+        }
+        if (activeProvider === 'slack' && providerResults.slack) {
+            _renderCachedSlackResult();
+        }
+        if (activeProvider === 'teams' && providerResults.teams) {
+            _renderCachedTeamsResult();
         }
     }
 
@@ -449,12 +571,17 @@ const Compliance = (() => {
         const serviceLabel = result.service_name || result.check || result.selected_service || 'Service';
         document.getElementById('compliance-results-title').textContent = `${providerLabel} ${serviceLabel} — Monitoring Report`;
 
-        _renderStatusBanner(result, provider);
         _renderUnifiedDashboard(result, provider);
     }
 
     function _renderCachedGithubResult() {
-        const result = { ...providerResults.github, selected_service: selectedServiceByProvider.github };
+        const cache = providerResults.github;
+        if (!cache?.services || !Object.keys(cache.services).length || String(cache.status || '').toLowerCase() === 'error') {
+            _showProviderSnapshotState('github', cache);
+            return;
+        }
+
+        const result = { ...cache, selected_service: selectedServiceByProvider.github };
         _showResults(result, 'github');
     }
 
@@ -508,6 +635,81 @@ const Compliance = (() => {
         }, 'azure');
     }
 
+    function _renderCachedGcpResult() {
+        const cache = providerResults.gcp;
+        if (!cache?.services || !Object.keys(cache.services).length) {
+            _showProviderSnapshotState('gcp', cache);
+            return;
+        }
+        const serviceKey = selectedServiceByProvider.gcp && cache.services[selectedServiceByProvider.gcp]
+            ? selectedServiceByProvider.gcp
+            : cache.selected_service || Object.keys(cache.services)[0];
+        if (!serviceKey || !cache.services[serviceKey]) {
+            _showProviderSnapshotState('gcp', cache);
+            return;
+        }
+
+        selectedServiceByProvider.gcp = serviceKey;
+        const selected = cache.services[serviceKey].metadata || {};
+        _showResults({
+            ...selected,
+            selected_service: serviceKey,
+            gcp_summary: cache.gcp_summary,
+            gcp_services: cache.services,
+            check: cache.check,
+        }, 'gcp');
+    }
+
+    function _renderCachedIbmResult() {
+        const cache = providerResults.ibm;
+        if (!cache?.services || !Object.keys(cache.services).length) {
+            _showProviderSnapshotState('ibm', cache);
+            return;
+        }
+        const serviceKey = selectedServiceByProvider.ibm && cache.services[selectedServiceByProvider.ibm]
+            ? selectedServiceByProvider.ibm
+            : cache.selected_service || Object.keys(cache.services)[0];
+        if (!serviceKey || !cache.services[serviceKey]) {
+            _showProviderSnapshotState('ibm', cache);
+            return;
+        }
+
+        selectedServiceByProvider.ibm = serviceKey;
+        const selected = cache.services[serviceKey].metadata || {};
+        _showResults({
+            ...selected,
+            selected_service: serviceKey,
+            ibm_summary: cache.ibm_summary,
+            ibm_services: cache.services,
+            check: cache.check,
+        }, 'ibm');
+    }
+
+    function _renderCachedOciResult() {
+        const cache = providerResults.oci;
+        if (!cache?.services || !Object.keys(cache.services).length) {
+            _showProviderSnapshotState('oci', cache);
+            return;
+        }
+        const serviceKey = selectedServiceByProvider.oci && cache.services[selectedServiceByProvider.oci]
+            ? selectedServiceByProvider.oci
+            : cache.selected_service || Object.keys(cache.services)[0];
+        if (!serviceKey || !cache.services[serviceKey]) {
+            _showProviderSnapshotState('oci', cache);
+            return;
+        }
+
+        selectedServiceByProvider.oci = serviceKey;
+        const selected = cache.services[serviceKey].metadata || {};
+        _showResults({
+            ...selected,
+            selected_service: serviceKey,
+            oci_summary: cache.oci_summary,
+            oci_services: cache.services,
+            check: cache.check,
+        }, 'oci');
+    }
+
     function _renderCachedGitlabResult() {
         const cache = providerResults.gitlab;
         if (!cache?.services || !Object.keys(cache.services).length) {
@@ -531,6 +733,56 @@ const Compliance = (() => {
             gitlab_services: cache.services,
             check: cache.check,
         }, 'gitlab');
+    }
+
+    function _renderCachedSlackResult() {
+        const cache = providerResults.slack;
+        if (!cache?.services || !Object.keys(cache.services).length) {
+            _showProviderSnapshotState('slack', cache);
+            return;
+        }
+        const serviceKey = selectedServiceByProvider.slack && cache.services[selectedServiceByProvider.slack]
+            ? selectedServiceByProvider.slack
+            : cache.selected_service || Object.keys(cache.services)[0];
+        if (!serviceKey || !cache.services[serviceKey]) {
+            _showProviderSnapshotState('slack', cache);
+            return;
+        }
+
+        selectedServiceByProvider.slack = serviceKey;
+        const selected = cache.services[serviceKey].metadata || {};
+        _showResults({
+            ...selected,
+            selected_service: serviceKey,
+            slack_summary: cache.slack_summary,
+            slack_services: cache.services,
+            check: cache.check,
+        }, 'slack');
+    }
+
+    function _renderCachedTeamsResult() {
+        const cache = providerResults.teams;
+        if (!cache?.services || !Object.keys(cache.services).length) {
+            _showProviderSnapshotState('teams', cache);
+            return;
+        }
+        const serviceKey = selectedServiceByProvider.teams && cache.services[selectedServiceByProvider.teams]
+            ? selectedServiceByProvider.teams
+            : cache.selected_service || Object.keys(cache.services)[0];
+        if (!serviceKey || !cache.services[serviceKey]) {
+            _showProviderSnapshotState('teams', cache);
+            return;
+        }
+
+        selectedServiceByProvider.teams = serviceKey;
+        const selected = cache.services[serviceKey].metadata || {};
+        _showResults({
+            ...selected,
+            selected_service: serviceKey,
+            teams_summary: cache.teams_summary,
+            teams_services: cache.services,
+            check: cache.check,
+        }, 'teams');
     }
 
     function _showProviderSnapshotState(provider, cache) {
@@ -573,7 +825,6 @@ const Compliance = (() => {
         document.getElementById('github-graph-panel').innerHTML = '<p class="empty-state">No graphable realtime metrics are available for this provider.</p>';
         _updateMetadataHeading(provider, providerLabel);
         document.getElementById('github-metadata-json').textContent = JSON.stringify(cache || {}, null, 2);
-        _renderStatusBanner(cache || { status: 'error', error: `No ${providerLabel} data available.` }, provider);
     }
 
     function _showInlineError(message) {
@@ -588,37 +839,6 @@ const Compliance = (() => {
     function _setProcessingBar(value) {
         const fill = document.getElementById('cc-processing-bar-fill');
         if (fill) fill.style.width = `${Math.max(0, Math.min(100, value))}%`;
-    }
-
-    function _renderStatusBanner(result, provider) {
-        const banner = document.getElementById('compliance-status-banner');
-        const icon = document.getElementById('compliance-status-icon');
-        const text = document.getElementById('compliance-status-text');
-        const desc = document.getElementById('compliance-status-desc');
-
-        if (provider === 'github') {
-            const summary = result.github_summary || {};
-            const status = summary.overall_status === 'fail' ? 'fail' : 'info';
-            banner.className = `cc-status-banner ${_statusToBannerClass(status)}`;
-            icon.textContent = _statusToSymbol(status);
-            text.textContent = 'GitHub monitoring summary';
-            const counts = summary.status_counts || {};
-            desc.textContent = `${counts.pass || 0} healthy, ${counts.fail || 0} blocked, ${counts.unknown || 0} unknown across ${Object.keys(result.services || {}).length || 0} services.`;
-            return;
-        }
-
-        const genericStatus = result.status === 'error'
-            ? 'fail'
-            : result.encryption_enabled === true
-                ? 'pass'
-                : result.encryption_enabled === false
-                    ? 'fail'
-                    : 'info';
-
-        banner.className = `cc-status-banner ${_statusToBannerClass(genericStatus)}`;
-        icon.textContent = _statusToSymbol(genericStatus);
-        text.textContent = `${PROVIDER_LABELS[provider]} ${result.service_name || result.check || 'Service'} monitor`;
-        desc.textContent = result.error || result.check_description || 'Review the live findings and metadata below for the current service.';
     }
 
     function _renderUnifiedDashboard(result, provider) {
@@ -636,18 +856,13 @@ const Compliance = (() => {
 
     function _renderGenericDashboard(result, provider) {
         const model = _buildGenericServiceModel(result, provider);
+        const providerSummary = result[`${provider}_summary`] || {};
+        const isProviderWideDashboard = ['aws', 'azure', 'gcp', 'ibm', 'oci', 'gitlab', 'slack', 'teams'].includes(provider);
         document.querySelector('.github-dashboard-kicker').textContent = `${PROVIDER_LABELS[provider]} Service Monitor`;
-        const providerSummary = provider === 'aws'
-            ? result.aws_summary || {}
-            : provider === 'azure'
-                ? result.azure_summary || {}
-                : provider === 'gitlab'
-                    ? result.gitlab_summary || {}
-                : null;
-        document.querySelector('.github-dashboard-title').textContent = (provider === 'aws' || provider === 'azure' || provider === 'gitlab')
+        document.querySelector('.github-dashboard-title').textContent = isProviderWideDashboard
             ? `Realtime monitoring across ${PROVIDER_LABELS[provider]} integrations`
             : `${result.service_name || result.check || 'Service'} monitor`;
-        document.getElementById('github-dashboard-copy').textContent = (provider === 'aws' || provider === 'azure' || provider === 'gitlab')
+        document.getElementById('github-dashboard-copy').textContent = isProviderWideDashboard
             ? `One cached ${PROVIDER_LABELS[provider]} monitoring run is used to inspect ${providerSummary.service_count || Object.keys(result[`${provider}_services`] || {}).length || 0} integrations without re-running collection when the service changes.`
             : model.copy;
         _renderRegionFilter(provider, result);
@@ -660,13 +875,15 @@ const Compliance = (() => {
 
     function _buildGenericServiceModel(result, provider) {
         const entries = [];
-        const overviewFindings = provider === 'aws'
-            ? _renderAwsDetailedFindings(result.api_findings || {}, result)
-            : provider === 'azure'
-                ? _renderAzureDetailedFindings(result.api_findings || {}, result)
-                : provider === 'gitlab'
-                    ? _renderGitlabDetailedFindings(result.api_findings || {}, result)
-                : _renderGenericFindings(result.api_findings || {});
+        let overviewFindings = _renderGenericFindings(result.api_findings || {});
+        if (provider === 'aws') overviewFindings = _renderAwsDetailedFindings(result.api_findings || {}, result);
+        if (provider === 'azure') overviewFindings = _renderAzureDetailedFindings(result.api_findings || {}, result);
+        if (provider === 'gcp') overviewFindings = _renderGcpDetailedFindings(result.api_findings || {}, result);
+        if (provider === 'ibm') overviewFindings = _renderIbmDetailedFindings(result.api_findings || {}, result);
+        if (provider === 'oci') overviewFindings = _renderOciDetailedFindings(result.api_findings || {}, result);
+        if (provider === 'gitlab') overviewFindings = _renderGitlabDetailedFindings(result.api_findings || {}, result);
+        if (provider === 'slack') overviewFindings = _renderSlackDetailedFindings(result.api_findings || {}, result);
+        if (provider === 'teams') overviewFindings = _renderTeamsDetailedFindings(result.api_findings || {}, result);
         entries.push({
             key: 'overview',
             name: 'API Overview',
@@ -810,7 +1027,7 @@ const Compliance = (() => {
     }
 
     function _getRegionFilterModel(provider, result) {
-        if (provider !== 'aws' && provider !== 'azure') {
+        if (provider !== 'aws' && provider !== 'azure' && provider !== 'gcp' && provider !== 'ibm' && provider !== 'oci') {
             return { visible: false, regions: [], counts: {} };
         }
         const integration = result.api_findings?.integration || {};
@@ -837,7 +1054,7 @@ const Compliance = (() => {
     }
 
     function _applyRegionFilterToInventory(provider, inventory) {
-        if (!inventory || (provider !== 'aws' && provider !== 'azure')) {
+        if (!inventory || (provider !== 'aws' && provider !== 'azure' && provider !== 'gcp' && provider !== 'ibm' && provider !== 'oci')) {
             return inventory || {};
         }
 
@@ -869,7 +1086,11 @@ const Compliance = (() => {
         if (integration.region_scope === 'global') {
             return 'the global service scope';
         }
-        return provider === 'aws' ? 'all enabled regions' : 'all available regions';
+        if (provider === 'aws') return 'all enabled regions';
+        if (provider === 'gcp') return 'all sampled regions';
+        if (provider === 'ibm') return 'all discovered regions';
+        if (provider === 'oci') return 'all subscribed regions';
+        return 'all available regions';
     }
 
     function _renderOverviewSection(title, stats, note = '') {
@@ -984,6 +1205,7 @@ const Compliance = (() => {
         const inventory = _applyRegionFilterToInventory(provider, result.api_findings?.inventory || {});
         const health = result.api_findings?.health || {};
         const subscriptions = result.api_findings?.subscriptions || [];
+        const scope = result.api_findings?.scope || {};
         const metrics = [
             { label: 'Resources', value: Number(inventory.resource_count || 0) },
             { label: 'Observations', value: Number((health.observations || []).length) },
@@ -993,6 +1215,41 @@ const Compliance = (() => {
 
         if (provider === 'azure') {
             metrics.push({ label: 'Subscriptions', value: Number(subscriptions.length || 0) });
+        }
+        if (provider === 'gcp') {
+            const integration = result.api_findings?.integration || {};
+            const collectionPrefixes = scope.collection_prefixes || [];
+            const patterns = integration.asset_patterns || [];
+            metrics.push({ label: 'Projects', value: Number(scope.project_count || 0) });
+            metrics.push({ label: 'Asset Types', value: Number(Object.keys(inventory.asset_type_counts || {}).length || 0) });
+            metrics.push({ label: 'Families', value: Number(collectionPrefixes.length || 0) });
+            metrics.push({ label: 'Patterns', value: Number(patterns.length || 0) });
+        }
+        if (provider === 'ibm') {
+            metrics.push({ label: 'Groups', value: Number(scope.resource_group_count || 0) });
+            metrics.push({ label: 'Regions', value: Number((inventory.available_regions || []).length || 0) });
+            metrics.push({ label: 'Families', value: Number((scope.discovered_service_families || []).length || 0) });
+            metrics.push({ label: 'Types', value: Number(Object.keys(inventory.resource_type_counts || {}).length || 0) });
+        }
+        if (provider === 'oci') {
+            metrics.push({ label: 'Regions', value: Number((inventory.available_regions || []).length || 0) });
+            metrics.push({ label: 'Types', value: Number(Object.keys(inventory.resource_type_counts || {}).length || 0) });
+            metrics.push({ label: 'Compartments', value: Number(Object.keys(inventory.compartment_counts || {}).length || 0) });
+            metrics.push({ label: 'Searchable Types', value: Number(scope.searchable_type_count || 0) });
+        }
+        if (provider === 'slack') {
+            metrics.push({ label: 'Channels', value: Number(scope.channel_count || 0) });
+            metrics.push({ label: 'Users', value: Number(scope.user_count || 0) });
+            metrics.push({ label: 'User Groups', value: Number(scope.user_group_count || 0) });
+            metrics.push({ label: 'Types', value: Number(Object.keys(inventory.type_counts || {}).length || 0) });
+        }
+        if (provider === 'teams') {
+            const workloads = scope.workload_counts || inventory.workload_counts || {};
+            metrics.push({ label: 'Policies', value: Number(scope.policy_count || 0) });
+            metrics.push({ label: 'Rules', value: Number(scope.rule_count || 0) });
+            metrics.push({ label: 'Teams Scope', value: Number(scope.teams_scoped_policy_count || 0) });
+            metrics.push({ label: 'Enabled', value: Number(scope.enabled_policy_count || 0) });
+            metrics.push({ label: 'Workloads', value: Number(Object.keys(workloads || {}).length || 0) });
         }
 
         return {
@@ -1004,7 +1261,7 @@ const Compliance = (() => {
 
     function _buildRegionGraphSubtitle(provider, result) {
         const selectedRegion = regionFilterByProvider[provider] || 'all';
-        if ((provider === 'aws' || provider === 'azure') && selectedRegion !== 'all') {
+        if ((provider === 'aws' || provider === 'azure' || provider === 'gcp' || provider === 'ibm' || provider === 'oci') && selectedRegion !== 'all') {
             return `Live inventory metrics for ${_formatRegionLabel(selectedRegion)}.`;
         }
         return 'Live inventory metrics from the selected service scan.';
@@ -1590,6 +1847,614 @@ const Compliance = (() => {
         return `${lead} The monitor found ${count} live ${serviceName} resources in ${region} across ${scope} and converted that metadata into a reviewable service snapshot for this report.`;
     }
 
+    function _renderGcpDetailedFindings(findings, result = {}) {
+        const integration = findings.integration || {};
+        const scope = findings.scope || {};
+        const inventory = _applyRegionFilterToInventory('gcp', findings.inventory || {});
+        const health = findings.health || {};
+        const access = findings.access || {};
+        const detailedItems = inventory.items_preview || [];
+        const sample = inventory.sample || [];
+        const observations = health.observations || [];
+        const notes = access.notes || [];
+        const errors = access.errors || [];
+        const serviceName = integration.service_name || result.service_name || 'GCP service';
+        const count = inventory.resource_count ?? 0;
+        const region = _describeSelectedRegion('gcp', integration);
+
+        let html = '<div class="github-findings-list">';
+
+        html += `
+            <section class="github-findings-section">
+                <div class="github-findings-section__title">Service Narrative</div>
+                <article class="github-finding-item">
+                    <div class="github-finding-item__header">
+                        <div>
+                            <h5>${serviceName}</h5>
+                            <p>Realtime GCP asset monitor</p>
+                        </div>
+                        <div class="github-finding-badges">
+                            <span class="github-chip ${health.status === 'pass' ? 'github-chip--pass' : health.status === 'warn' ? 'github-chip--warn' : 'github-chip--fail'}">${String(health.status || 'unknown').toUpperCase()}</span>
+                            <span class="github-chip">${count} resources</span>
+                        </div>
+                    </div>
+                    <p class="github-finding-body">${_buildGcpServiceNarrative(serviceName, count, scope, region, health.summary)}</p>
+                </article>
+            </section>
+        `;
+
+        html += _renderOverviewSection('Monitoring Scope', [
+            { label: 'Scope', value: scope.scope_label || 'Configured scope' },
+            { label: 'Mode', value: scope.scope_mode || 'project-discovery' },
+            { label: 'Projects in scope', value: scope.project_count || 0 },
+            { label: 'Assets sampled', value: scope.assets_sampled || 0 },
+            { label: 'Resources returned', value: count },
+            { label: 'Checked at', value: _shortDateTime(integration.checked_at) },
+        ]);
+        html += _renderOverviewSection('Service Profile', [
+            { label: 'Service family', value: serviceName },
+            { label: 'Coverage model', value: integration.region_scope === 'global' ? 'Global resource type' : 'Regional resource type' },
+            { label: 'Query patterns', value: (integration.asset_patterns || []).length || 0 },
+            { label: 'Collector families', value: (scope.collection_prefixes || []).length || 0 },
+            { label: 'Collector mode', value: integration.mode || 'Asset inventory monitor' },
+        ], integration.description || '');
+        html += _renderCountMapSection('Regional Coverage', inventory.regional_resource_counts || {});
+        html += _renderCountMapSection('Asset Type Breakdown', inventory.asset_type_counts || {});
+        html += _renderSimpleListSection('Projects Sampled', (scope.projects || []).map(project => project.displayName || project.projectId || project.name).filter(Boolean), 'Project');
+        html += _renderSimpleListSection('Asset Query Patterns', integration.asset_patterns || [], 'Pattern');
+        html += _renderSimpleListSection('Collector Families', scope.collection_prefixes || [], 'Family');
+
+        if (observations.length) {
+            html += `
+                <section class="github-findings-section">
+                    <div class="github-findings-section__title">Security Interpretation</div>
+                    ${observations.map(item => `
+                        <article class="github-finding-item github-finding-item--compact">
+                            <div class="github-finding-item__header">
+                                <div>
+                                    <h5>Observation</h5>
+                                    <p>${item}</p>
+                                </div>
+                            </div>
+                        </article>
+                    `).join('')}
+                </section>
+            `;
+        }
+
+        if (detailedItems.length || sample.length) {
+            html += `
+                <section class="github-findings-section">
+                    <div class="github-findings-section__title">Observed Resources</div>
+                    ${(detailedItems.length ? detailedItems : sample).map((item, index) => `
+                        <article class="github-finding-item github-finding-item--compact">
+                            <div class="github-finding-item__header">
+                                <div>
+                                    <h5>${_buildGcpResourceTitle(item, index)}</h5>
+                                    <p>${_buildGcpSampleNarrative([item])}</p>
+                                </div>
+                            </div>
+                            ${_renderGcpResourceStats(item)}
+                        </article>
+                    `).join('')}
+                </section>
+            `;
+        } else {
+            html += `
+                <section class="github-findings-section">
+                    <div class="github-findings-section__title">Observed Resources</div>
+                    <article class="github-finding-item github-finding-item--compact">
+                        <div class="github-finding-item__header">
+                            <div>
+                                <h5>No live ${serviceName} resources found</h5>
+                                <p>The current GCP scan did not return any assets matching this service family inside ${scope.scope_label || 'the configured scope'}. This can be a real empty state, or it can mean the token does not have visibility into that asset family.</p>
+                            </div>
+                        </div>
+                    </article>
+                </section>
+            `;
+        }
+
+        if (notes.length) {
+            html += `
+                <section class="github-findings-section">
+                    <div class="github-findings-section__title">Collection Notes</div>
+                    ${notes.map(item => `
+                        <article class="github-finding-item github-finding-item--compact">
+                            <div class="github-finding-item__header">
+                                <div>
+                                    <h5>Collector note</h5>
+                                    <p>${item}</p>
+                                </div>
+                            </div>
+                        </article>
+                    `).join('')}
+                </section>
+            `;
+        }
+
+        if (errors.length) {
+            html += `
+                <section class="github-findings-section">
+                    <div class="github-findings-section__title">Access Limitations</div>
+                    ${errors.map(item => `
+                        <article class="github-finding-item github-finding-item--compact">
+                            <div class="github-finding-item__header">
+                                <div>
+                                    <h5>Permission gap</h5>
+                                    <p>${item}</p>
+                                </div>
+                            </div>
+                        </article>
+                    `).join('')}
+                </section>
+            `;
+        }
+
+        html += '</div>';
+        return html;
+    }
+
+    function _buildGcpServiceNarrative(serviceName, count, scope, region, summary) {
+        const lead = summary || `${serviceName} was checked through the GCP asset monitor.`;
+        const projectCount = scope.project_count || 0;
+        const footprint = projectCount
+            ? `${projectCount} project${projectCount === 1 ? '' : 's'}`
+            : (scope.scope_label || 'the configured GCP scope');
+        if (count === 0) {
+            return `${lead} No live ${serviceName} resources were returned in ${region} across ${footprint}, which usually means this service is not currently in use there or the token does not have Cloud Asset Inventory visibility for those resources.`;
+        }
+        if (count === 1) {
+            return `${lead} The monitor found 1 live ${serviceName} resource in ${region} across ${footprint} and converted that metadata into a reviewable service snapshot for this report.`;
+        }
+        return `${lead} The monitor found ${count} live ${serviceName} resources in ${region} across ${footprint} and converted that metadata into a reviewable service snapshot for this report.`;
+    }
+
+    function _buildGcpSampleNarrative(sample) {
+        const summaries = sample.slice(0, 3).map(item => {
+            if (!item || typeof item !== 'object') {
+                return `Observed item: ${String(item)}`;
+            }
+            const pairs = Object.entries(item).slice(0, 4).map(([key, value]) => `${_humanizeFieldName(key)} ${value}`);
+            return pairs.length ? pairs.join(', ') : 'Observed GCP metadata was returned';
+        });
+        return summaries.join('. ') + '.';
+    }
+
+    function _buildGcpResourceTitle(item, index) {
+        if (!item || typeof item !== 'object') {
+            return `Resource ${index + 1}`;
+        }
+        return item.display_name
+            || item.displayName
+            || item.projectId
+            || item.resourceName
+            || item.name
+            || item.assetType
+            || `Resource ${index + 1}`;
+    }
+
+    function _renderGcpResourceStats(item) {
+        if (!item || typeof item !== 'object') {
+            return '';
+        }
+        const preferredKeys = [
+            'display_name', 'assetType', 'projectId', 'location', '_region',
+            'state', 'description', 'parentFullResourceName', 'resourceName',
+        ];
+        const seen = new Set();
+        const stats = [];
+
+        preferredKeys.forEach(key => {
+            if (item[key] !== undefined && item[key] !== null && !seen.has(key) && typeof item[key] !== 'object') {
+                seen.add(key);
+                stats.push(`<span>${_humanizeFieldName(key)} <strong>${item[key]}</strong></span>`);
+            }
+        });
+
+        Object.entries(item).forEach(([key, value]) => {
+            if (stats.length >= 6 || seen.has(key) || value === undefined || value === null || typeof value === 'object') {
+                return;
+            }
+            stats.push(`<span>${_humanizeFieldName(key)} <strong>${value}</strong></span>`);
+        });
+
+        return stats.length ? `<div class="github-finding-stats">${stats.join('')}</div>` : '';
+    }
+
+    function _renderIbmDetailedFindings(findings, result = {}) {
+        const integration = findings.integration || {};
+        const scope = findings.scope || {};
+        const inventory = _applyRegionFilterToInventory('ibm', findings.inventory || {});
+        const health = findings.health || {};
+        const access = findings.access || {};
+        const detailedItems = inventory.items_preview || [];
+        const sample = inventory.sample || [];
+        const observations = health.observations || [];
+        const notes = access.notes || [];
+        const errors = access.errors || [];
+        const serviceName = integration.service_name || result.service_name || 'IBM Cloud service';
+        const count = inventory.resource_count ?? 0;
+        const region = _describeSelectedRegion('ibm', integration);
+
+        let html = '<div class="github-findings-list">';
+
+        html += `
+            <section class="github-findings-section">
+                <div class="github-findings-section__title">Service Narrative</div>
+                <article class="github-finding-item">
+                    <div class="github-finding-item__header">
+                        <div>
+                            <h5>${serviceName}</h5>
+                            <p>Realtime IBM Cloud resource monitor</p>
+                        </div>
+                        <div class="github-finding-badges">
+                            <span class="github-chip ${health.status === 'pass' ? 'github-chip--pass' : health.status === 'warn' ? 'github-chip--warn' : 'github-chip--fail'}">${String(health.status || 'unknown').toUpperCase()}</span>
+                            <span class="github-chip">${count} resources</span>
+                        </div>
+                    </div>
+                    <p class="github-finding-body">${_buildIbmServiceNarrative(serviceName, count, scope, region, health.summary)}</p>
+                </article>
+            </section>
+        `;
+
+        html += _renderOverviewSection('Monitoring Scope', [
+            { label: 'Mode', value: integration.mode || 'API-only' },
+            { label: 'Category', value: integration.category || 'IBM Cloud service' },
+            { label: 'Scope', value: integration.region_scope === 'global' ? 'Global' : 'Regional' },
+            { label: 'Selected region', value: region },
+            { label: 'Resource groups', value: scope.resource_group_count || 0 },
+            { label: 'Checked at', value: _shortDateTime(integration.checked_at) },
+        ], integration.description || '');
+        html += _renderOverviewSection('Account Coverage', [
+            { label: 'Account', value: scope.account_id || 'Accessible account' },
+            { label: 'Discovered resources', value: scope.resource_count || 0 },
+            { label: 'Discovered families', value: (scope.discovered_service_families || []).length || 0 },
+            { label: 'Regions', value: (scope.regions || []).length || 0 },
+            { label: 'Patterns', value: (integration.match_patterns || []).length || 0 },
+        ]);
+        html += _renderCountMapSection('Regional Coverage', inventory.regional_resource_counts || {});
+        html += _renderCountMapSection('Resource Group Coverage', inventory.resource_group_counts || {});
+        html += _renderCountMapSection('Service Family Breakdown', inventory.resource_type_counts || {});
+        html += _renderSimpleListSection('Resource Groups', (scope.resource_groups || []).map(group => group.name).filter(Boolean), 'Group');
+
+        if (observations.length) {
+            html += `
+                <section class="github-findings-section">
+                    <div class="github-findings-section__title">Operational Interpretation</div>
+                    ${observations.map(item => `
+                        <article class="github-finding-item github-finding-item--compact">
+                            <div class="github-finding-item__header">
+                                <div>
+                                    <h5>Observation</h5>
+                                    <p>${item}</p>
+                                </div>
+                            </div>
+                        </article>
+                    `).join('')}
+                </section>
+            `;
+        }
+
+        if (detailedItems.length || sample.length) {
+            html += `
+                <section class="github-findings-section">
+                    <div class="github-findings-section__title">Observed Resources</div>
+                    ${(detailedItems.length ? detailedItems : sample).map((item, index) => `
+                        <article class="github-finding-item github-finding-item--compact">
+                            <div class="github-finding-item__header">
+                                <div>
+                                    <h5>${_buildIbmResourceTitle(item, index)}</h5>
+                                    <p>${_buildIbmSampleNarrative([item])}</p>
+                                </div>
+                            </div>
+                            ${_renderIbmResourceStats(item)}
+                        </article>
+                    `).join('')}
+                </section>
+            `;
+        }
+
+        if (notes.length) {
+            html += `
+                <section class="github-findings-section">
+                    <div class="github-findings-section__title">Collection Notes</div>
+                    ${notes.map(item => `
+                        <article class="github-finding-item github-finding-item--compact">
+                            <div class="github-finding-item__header">
+                                <div>
+                                    <h5>Collector note</h5>
+                                    <p>${item}</p>
+                                </div>
+                            </div>
+                        </article>
+                    `).join('')}
+                </section>
+            `;
+        }
+
+        if (errors.length) {
+            html += `
+                <section class="github-findings-section">
+                    <div class="github-findings-section__title">Access Limitations</div>
+                    ${errors.map(item => `
+                        <article class="github-finding-item github-finding-item--compact">
+                            <div class="github-finding-item__header">
+                                <div>
+                                    <h5>Permission gap</h5>
+                                    <p>${item}</p>
+                                </div>
+                            </div>
+                        </article>
+                    `).join('')}
+                </section>
+            `;
+        }
+
+        html += '</div>';
+        return html;
+    }
+
+    function _buildIbmServiceNarrative(serviceName, count, scope, region, summary) {
+        const lead = summary || `${serviceName} was checked through the IBM Cloud API monitor.`;
+        const groups = scope.resource_group_count || 0;
+        const footprint = groups
+            ? `${groups} resource group${groups === 1 ? '' : 's'}`
+            : 'the accessible IBM Cloud account scope';
+        if (count === 0) {
+            return `${lead} No live ${serviceName} resources were returned in ${region} across ${footprint}, which usually means the service is not currently provisioned there or the API key does not have visibility into that footprint.`;
+        }
+        if (count === 1) {
+            return `${lead} The monitor found 1 live ${serviceName} resource in ${region} across ${footprint} and converted that metadata into a reviewable service snapshot for this report.`;
+        }
+        return `${lead} The monitor found ${count} live ${serviceName} resources in ${region} across ${footprint} and converted that metadata into a reviewable service snapshot for this report.`;
+    }
+
+    function _buildIbmSampleNarrative(sample) {
+        const summaries = sample.slice(0, 3).map(item => {
+            if (!item || typeof item !== 'object') {
+                return `Observed item: ${String(item)}`;
+            }
+            const pairs = Object.entries(item)
+                .filter(([, value]) => value !== null && value !== undefined && typeof value !== 'object')
+                .slice(0, 4)
+                .map(([key, value]) => `${_humanizeFieldName(key)} ${value}`);
+            return pairs.length ? pairs.join(', ') : 'Observed IBM Cloud metadata was returned';
+        });
+        return summaries.join('. ') + '.';
+    }
+
+    function _buildIbmResourceTitle(item, index) {
+        if (!item || typeof item !== 'object') {
+            return `Resource ${index + 1}`;
+        }
+        return item.display_name
+            || item.name
+            || item.resource_group_name
+            || item._service_name
+            || item.crn
+            || `Resource ${index + 1}`;
+    }
+
+    function _renderIbmResourceStats(item) {
+        if (!item || typeof item !== 'object') {
+            return '';
+        }
+        const preferredKeys = [
+            'display_name', 'name', '_service_name', '_region', 'resource_group_name',
+            'state', 'type', 'resource_id', 'resource_plan_id', 'created_at',
+        ];
+        const seen = new Set();
+        const stats = [];
+
+        preferredKeys.forEach(key => {
+            if (item[key] !== undefined && item[key] !== null && !seen.has(key) && typeof item[key] !== 'object') {
+                seen.add(key);
+                stats.push(`<span>${_humanizeFieldName(key)} <strong>${item[key]}</strong></span>`);
+            }
+        });
+
+        Object.entries(item).forEach(([key, value]) => {
+            if (stats.length >= 6 || seen.has(key) || value === undefined || value === null || typeof value === 'object') {
+                return;
+            }
+            stats.push(`<span>${_humanizeFieldName(key)} <strong>${value}</strong></span>`);
+        });
+
+        return stats.length ? `<div class="github-finding-stats">${stats.join('')}</div>` : '';
+    }
+
+    function _renderOciDetailedFindings(findings, result = {}) {
+        const integration = findings.integration || {};
+        const scope = findings.scope || {};
+        const inventory = _applyRegionFilterToInventory('oci', findings.inventory || {});
+        const health = findings.health || {};
+        const access = findings.access || {};
+        const detailedItems = inventory.items_preview || [];
+        const sample = inventory.sample || [];
+        const observations = health.observations || [];
+        const notes = access.notes || [];
+        const errors = access.errors || [];
+        const serviceName = integration.service_name || result.service_name || 'Oracle Cloud service';
+        const count = inventory.resource_count ?? 0;
+        const region = _describeSelectedRegion('oci', integration);
+
+        let html = '<div class="github-findings-list">';
+
+        html += `
+            <section class="github-findings-section">
+                <div class="github-findings-section__title">Service Narrative</div>
+                <article class="github-finding-item">
+                    <div class="github-finding-item__header">
+                        <div>
+                            <h5>${serviceName}</h5>
+                            <p>Realtime OCI Resource Search monitor</p>
+                        </div>
+                        <div class="github-finding-badges">
+                            <span class="github-chip ${health.status === 'pass' ? 'github-chip--pass' : health.status === 'warn' ? 'github-chip--warn' : 'github-chip--fail'}">${String(health.status || 'unknown').toUpperCase()}</span>
+                            <span class="github-chip">${count} resources</span>
+                        </div>
+                    </div>
+                    <p class="github-finding-body">${_buildOciServiceNarrative(serviceName, count, scope, region, health.summary)}</p>
+                </article>
+            </section>
+        `;
+
+        html += _renderOverviewSection('Monitoring Scope', [
+            { label: 'Category', value: integration.category || 'OCI service' },
+            { label: 'Configured region', value: _formatRegionLabel(scope.configured_region || '') || '' },
+            { label: 'Home region', value: _formatRegionLabel(scope.home_region || '') || '' },
+            { label: 'Region view', value: region },
+            { label: 'Subscribed regions', value: scope.region_count || 0 },
+            { label: 'Checked at', value: _shortDateTime(integration.checked_at) },
+        ], integration.description || '');
+        html += _renderOverviewSection('Search Coverage', [
+            { label: 'Resources sampled', value: scope.resources_sampled || 0 },
+            { label: 'Searchable types', value: scope.searchable_type_count || 0 },
+            { label: 'Compartments visible', value: scope.compartments_visible || 0 },
+            { label: 'Collector mode', value: integration.mode || 'Resource Search' },
+            { label: 'Pattern count', value: (integration.resource_type_patterns || []).length || 0 },
+        ]);
+        html += _renderCountMapSection('Regional Coverage', inventory.regional_resource_counts || {});
+        html += _renderCountMapSection('Resource Type Breakdown', inventory.resource_type_counts || {});
+        html += _renderCountMapSection('Compartment Breakdown', inventory.compartment_counts || {});
+        html += _renderSimpleListSection('Regions in Scope', (scope.subscribed_regions || []).map(item => item.name).filter(Boolean), 'Region');
+        html += _renderSimpleListSection('Search Type Preview', scope.searchable_type_preview || [], 'Type');
+
+        if (observations.length) {
+            html += `
+                <section class="github-findings-section">
+                    <div class="github-findings-section__title">Operational Interpretation</div>
+                    ${observations.map(item => `
+                        <article class="github-finding-item github-finding-item--compact">
+                            <div class="github-finding-item__header">
+                                <div>
+                                    <h5>Observation</h5>
+                                    <p>${item}</p>
+                                </div>
+                            </div>
+                        </article>
+                    `).join('')}
+                </section>
+            `;
+        }
+
+        if (detailedItems.length || sample.length) {
+            html += `
+                <section class="github-findings-section">
+                    <div class="github-findings-section__title">Observed Resources</div>
+                    ${(detailedItems.length ? detailedItems : sample).map((item, index) => `
+                        <article class="github-finding-item github-finding-item--compact">
+                            <div class="github-finding-item__header">
+                                <div>
+                                    <h5>${_buildOciResourceTitle(item, index)}</h5>
+                                    <p>${_buildOciSampleNarrative([item])}</p>
+                                </div>
+                            </div>
+                            ${_renderOciResourceStats(item)}
+                        </article>
+                    `).join('')}
+                </section>
+            `;
+        }
+
+        if (notes.length || errors.length) {
+            html += `
+                <section class="github-findings-section">
+                    <div class="github-findings-section__title">Collection Notes</div>
+                    ${notes.map(item => `
+                        <article class="github-finding-item github-finding-item--compact">
+                            <div class="github-finding-item__header">
+                                <div>
+                                    <h5>Collector note</h5>
+                                    <p>${item}</p>
+                                </div>
+                            </div>
+                        </article>
+                    `).join('')}
+                    ${errors.map(item => `
+                        <article class="github-finding-item github-finding-item--compact">
+                            <div class="github-finding-item__header">
+                                <div>
+                                    <h5>Regional search gap</h5>
+                                    <p>${item}</p>
+                                </div>
+                            </div>
+                        </article>
+                    `).join('')}
+                </section>
+            `;
+        }
+
+        html += '</div>';
+        return html;
+    }
+
+    function _buildOciServiceNarrative(serviceName, count, scope, region, summary) {
+        const lead = summary || `${serviceName} was checked through the OCI Resource Search monitor.`;
+        const footprint = `${scope.region_count || 0} subscribed region${scope.region_count === 1 ? '' : 's'} and ${scope.compartments_visible || 0} visible compartment${scope.compartments_visible === 1 ? '' : 's'}`;
+        if (count === 0) {
+            return `${lead} No live ${serviceName} resources were returned in ${region} across ${footprint}, which usually means the service is not currently in use there or the signed principal does not have searchable visibility into those resources.`;
+        }
+        if (count === 1) {
+            return `${lead} The monitor found 1 live ${serviceName} resource in ${region} across ${footprint} and converted that metadata into a reviewable service snapshot for this report.`;
+        }
+        return `${lead} The monitor found ${count} live ${serviceName} resources in ${region} across ${footprint} and converted that metadata into a reviewable service snapshot for this report.`;
+    }
+
+    function _buildOciSampleNarrative(sample) {
+        const summaries = sample.slice(0, 3).map(item => {
+            if (!item || typeof item !== 'object') {
+                return `Observed item: ${String(item)}`;
+            }
+            const pairs = Object.entries(item).slice(0, 4).map(([key, value]) => `${_humanizeFieldName(key)} ${value}`);
+            return pairs.length ? pairs.join(', ') : 'Observed OCI metadata was returned';
+        });
+        return summaries.join('. ') + '.';
+    }
+
+    function _buildOciResourceTitle(item, index) {
+        if (!item || typeof item !== 'object') {
+            return `Resource ${index + 1}`;
+        }
+        return item.display_name
+            || item.displayName
+            || item.identifier
+            || item.namespace
+            || item.endpoint
+            || item.resourceType
+            || `Resource ${index + 1}`;
+    }
+
+    function _renderOciResourceStats(item) {
+        if (!item || typeof item !== 'object') {
+            return '';
+        }
+        const preferredKeys = [
+            'display_name', 'resourceType', '_region', 'lifecycleState',
+            'compartmentName', 'availabilityDomain', 'shape', 'cidrBlock',
+            'namespace', 'publicIp', 'privateIp', 'identifier',
+        ];
+        const seen = new Set();
+        const stats = [];
+
+        preferredKeys.forEach(key => {
+            if (item[key] !== undefined && item[key] !== null && !seen.has(key) && typeof item[key] !== 'object') {
+                seen.add(key);
+                stats.push(`<span>${_humanizeFieldName(key)} <strong>${item[key]}</strong></span>`);
+            }
+        });
+
+        Object.entries(item).forEach(([key, value]) => {
+            if (stats.length >= 6 || seen.has(key) || value === undefined || value === null || typeof value === 'object') {
+                return;
+            }
+            stats.push(`<span>${_humanizeFieldName(key)} <strong>${value}</strong></span>`);
+        });
+
+        return stats.length ? `<div class="github-finding-stats">${stats.join('')}</div>` : '';
+    }
+
     function _renderGitlabDetailedFindings(findings, result = {}) {
         const integration = findings.integration || {};
         const inventory = findings.inventory || {};
@@ -1708,6 +2573,345 @@ const Compliance = (() => {
 
         html += '</div>';
         return html;
+    }
+
+    function _renderSlackDetailedFindings(findings, result = {}) {
+        const integration = findings.integration || {};
+        const scope = findings.scope || {};
+        const inventory = findings.inventory || {};
+        const health = findings.health || {};
+        const access = findings.access || {};
+        const detailedItems = inventory.items_preview || [];
+        const sample = inventory.sample || [];
+        const observations = health.observations || [];
+        const notes = access.notes || [];
+        const errors = access.errors || [];
+        const serviceName = integration.service_name || result.service_name || 'Slack service';
+        const count = inventory.resource_count ?? 0;
+
+        let html = '<div class="github-findings-list">';
+        html += `
+            <section class="github-findings-section">
+                <div class="github-findings-section__title">Service Narrative</div>
+                <article class="github-finding-item">
+                    <div class="github-finding-item__header">
+                        <div>
+                            <h5>${serviceName}</h5>
+                            <p>Realtime Slack Web API monitor</p>
+                        </div>
+                        <div class="github-finding-badges">
+                            <span class="github-chip ${health.status === 'pass' ? 'github-chip--pass' : health.status === 'warn' ? 'github-chip--warn' : 'github-chip--fail'}">${String(health.status || 'unknown').toUpperCase()}</span>
+                            <span class="github-chip">${count} resources</span>
+                        </div>
+                    </div>
+                    <p class="github-finding-body">${_buildCollaborationNarrative('Slack', serviceName, count, scope.workspace_name || integration.workspace, health.summary)}</p>
+                </article>
+            </section>
+        `;
+        html += _renderOverviewSection('Monitoring Scope', [
+            { label: 'Workspace', value: scope.workspace_name || integration.workspace || 'Connected workspace' },
+            { label: 'Team ID', value: scope.team_id || integration.team_id || '' },
+            { label: 'Operator', value: scope.operator || '' },
+            { label: 'Channels in scope', value: scope.channel_count || 0 },
+            { label: 'Users in scope', value: scope.user_count || 0 },
+            { label: 'User groups', value: scope.user_group_count || 0 },
+            { label: 'Checked at', value: _shortDateTime(integration.checked_at) },
+        ]);
+        html += _renderCountMapSection('Resource Breakdown', inventory.type_counts || {});
+        html += _renderSimpleListSection('Sampled Channels', scope.sampled_channels || [], 'Channel');
+
+        if (observations.length) {
+            html += `
+                <section class="github-findings-section">
+                    <div class="github-findings-section__title">Security Interpretation</div>
+                    ${observations.map(item => `
+                        <article class="github-finding-item github-finding-item--compact">
+                            <div class="github-finding-item__header">
+                                <div>
+                                    <h5>Observation</h5>
+                                    <p>${item}</p>
+                                </div>
+                            </div>
+                        </article>
+                    `).join('')}
+                </section>
+            `;
+        }
+
+        if (detailedItems.length || sample.length) {
+            const items = detailedItems.length ? detailedItems : sample;
+            html += `
+                <section class="github-findings-section">
+                    <div class="github-findings-section__title">Observed Resources</div>
+                    ${items.map((item, index) => `
+                        <article class="github-finding-item github-finding-item--compact">
+                            <div class="github-finding-item__header">
+                                <div>
+                                    <h5>${_buildCollabResourceTitle(item, index)}</h5>
+                                    <p>${_buildCollabSampleNarrative([item])}</p>
+                                </div>
+                            </div>
+                            ${_renderCollabResourceStats(item, ['ChannelName', 'MemberCount', 'PinType', 'display_name', 'name', 'handle', 'real_name', 'id'])}
+                        </article>
+                    `).join('')}
+                </section>
+            `;
+        }
+
+        if (notes.length || errors.length) {
+            html += _renderCollaborationAccessSection(notes, errors);
+        }
+
+        html += '</div>';
+        return html;
+    }
+
+    function _renderTeamsDetailedFindings(findings, result = {}) {
+        const integration = findings.integration || {};
+        const scope = findings.scope || {};
+        const inventory = findings.inventory || {};
+        const health = findings.health || {};
+        const access = findings.access || {};
+        const detailedItems = inventory.items_preview || [];
+        const sample = inventory.sample || [];
+        const observations = health.observations || [];
+        const notes = access.notes || [];
+        const errors = access.errors || [];
+        const serviceName = integration.service_name || result.service_name || 'Teams DLP service';
+        const count = inventory.resource_count ?? 0;
+        const workloadCounts = scope.workload_counts || inventory.workload_counts || {};
+
+        let html = '<div class="github-findings-list">';
+        html += `
+            <section class="github-findings-section">
+                <div class="github-findings-section__title">Service Narrative</div>
+                <article class="github-finding-item">
+                    <div class="github-finding-item__header">
+                        <div>
+                            <h5>${serviceName}</h5>
+                            <p>Realtime Microsoft Graph monitor</p>
+                        </div>
+                        <div class="github-finding-badges">
+                            <span class="github-chip ${health.status === 'pass' ? 'github-chip--pass' : health.status === 'warn' ? 'github-chip--warn' : 'github-chip--fail'}">${String(health.status || 'unknown').toUpperCase()}</span>
+                            <span class="github-chip">${count} items</span>
+                        </div>
+                    </div>
+                    <p class="github-finding-body">${health.summary || `${serviceName} was evaluated from the latest Teams DLP snapshot.`}</p>
+                </article>
+            </section>
+        `;
+        html += _renderOverviewSection('Monitoring Scope', [
+            { label: 'Policies', value: scope.policy_count || 0 },
+            { label: 'Rules', value: scope.rule_count || 0 },
+            { label: 'Teams-scoped policies', value: scope.teams_scoped_policy_count || 0 },
+            { label: 'Enabled policies', value: scope.enabled_policy_count || 0 },
+            { label: 'Test-mode policies', value: scope.test_policy_count || 0 },
+            { label: 'Disabled policies', value: scope.disabled_policy_count || 0 },
+            { label: 'Snapshot job', value: scope.snapshot_job_id || integration.snapshot_job_id || '' },
+            { label: 'Checked at', value: _shortDateTime(integration.snapshot_completed_at || integration.checked_at) },
+        ]);
+        html += _renderCountMapSection('Workload Coverage', workloadCounts);
+        html += _renderCountMapSection('Mode Breakdown', inventory.mode_counts || {});
+        html += _renderCountMapSection('Teams Locations', inventory.teams_location_counts || {});
+        html += _renderSimpleListSection('Sampled Policies', scope.sampled_policy_names || [], 'Policy');
+
+        if (observations.length) {
+            html += `
+                <section class="github-findings-section">
+                    <div class="github-findings-section__title">Security Interpretation</div>
+                    ${observations.map(item => `
+                        <article class="github-finding-item github-finding-item--compact">
+                            <div class="github-finding-item__header">
+                                <div>
+                                    <h5>Observation</h5>
+                                    <p>${item}</p>
+                                </div>
+                            </div>
+                        </article>
+                    `).join('')}
+                </section>
+            `;
+        }
+
+        if (detailedItems.length || sample.length) {
+            const items = detailedItems.length ? detailedItems : sample;
+            html += `
+                <section class="github-findings-section">
+                    <div class="github-findings-section__title">Observed DLP Configuration</div>
+                    ${items.map((item, index) => `
+                        <article class="github-finding-item github-finding-item--compact">
+                            <div class="github-finding-item__header">
+                                <div>
+                                    <h5>${_buildTeamsDlpItemTitle(item, index)}</h5>
+                                    <p>${_buildTeamsDlpItemSummary(item)}</p>
+                                </div>
+                            </div>
+                            ${_renderTeamsDlpItemStats(item)}
+                        </article>
+                    `).join('')}
+                </section>
+            `;
+        }
+
+        if (notes.length || errors.length) {
+            html += _renderCollaborationAccessSection(notes, errors);
+        }
+
+        html += '</div>';
+        return html;
+    }
+
+    function _buildTeamsDlpItemTitle(item, index) {
+        if (!item || typeof item !== 'object') {
+            return `DLP Item ${index + 1}`;
+        }
+        return item.display_name
+            || item.Name
+            || item.name
+            || item.Policy
+            || `DLP Item ${index + 1}`;
+    }
+
+    function _buildTeamsDlpItemSummary(item) {
+        if (!item || typeof item !== 'object') {
+            return 'No detailed policy metadata is available.';
+        }
+        const fragments = [];
+        if (item.Mode) fragments.push(`mode ${String(item.Mode).toLowerCase()}`);
+        if (item.Policy) fragments.push(`policy ${item.Policy}`);
+        if (Array.isArray(item.Workloads) && item.Workloads.length) fragments.push(`${item.Workloads.length} workload(s)`);
+        if (Array.isArray(item.TeamsLocation) && item.TeamsLocation.length) fragments.push(`${item.TeamsLocation.length} Teams location(s)`);
+        if (Array.isArray(item.ActionSummary) && item.ActionSummary.length) fragments.push(item.ActionSummary[0]);
+        if (Array.isArray(item.ExceptionSummary) && item.ExceptionSummary.length) fragments.push('has exceptions');
+        return fragments.length ? fragments.join(' · ') : 'Normalized DLP configuration item from the latest snapshot.';
+    }
+
+    function _renderTeamsDlpItemStats(item) {
+        if (!item || typeof item !== 'object') {
+            return '';
+        }
+        const fields = ['Mode', 'Priority', 'Policy', 'Severity', 'AccessScope'];
+        const values = [];
+        fields.forEach(key => {
+            if (item[key] !== undefined && item[key] !== null && item[key] !== '') {
+                values.push(`<span>${key.replace(/([A-Z])/g, ' $1').trim()} <strong>${item[key]}</strong></span>`);
+            }
+        });
+        if (Array.isArray(item.TeamsLocation) && item.TeamsLocation.length) {
+            values.push(`<span>Teams locations <strong>${item.TeamsLocation.length}</strong></span>`);
+        }
+        if (Array.isArray(item.Workloads) && item.Workloads.length) {
+            values.push(`<span>Workloads <strong>${item.Workloads.join(', ')}</strong></span>`);
+        }
+        if (Array.isArray(item.ThirdPartyAppDlpLocation) && item.ThirdPartyAppDlpLocation.length) {
+            values.push(`<span>Third-party apps <strong>${item.ThirdPartyAppDlpLocation.length}</strong></span>`);
+        }
+        if (Array.isArray(item.ActionSummary) && item.ActionSummary.length) {
+            values.push(`<span>Action <strong>${item.ActionSummary[0]}</strong></span>`);
+        }
+        return values.length ? `<div class="github-finding-stats">${values.join('')}</div>` : '';
+    }
+
+    function _buildCollaborationNarrative(providerName, serviceName, count, scopeName, summary) {
+        const lead = summary || `${serviceName} was checked through the ${providerName} API monitor.`;
+        const scope = scopeName || `${providerName} workspace`;
+        if (count === 0) {
+            return `${lead} No live resources were returned in ${scope}, which usually means the surface is not yet in use there or the current token does not have the required read scopes.`;
+        }
+        if (count === 1) {
+            return `${lead} The monitor found 1 live ${serviceName} resource in ${scope} and converted that metadata into a reviewable monitoring snapshot.`;
+        }
+        return `${lead} The monitor found ${count} live ${serviceName} resources in ${scope} and converted that metadata into a reviewable monitoring snapshot.`;
+    }
+
+    function _buildCollabResourceTitle(item, index) {
+        if (!item || typeof item !== 'object') {
+            return `Item ${index + 1}`;
+        }
+        return item.display_name
+            || item.displayName
+            || item.name
+            || item.real_name
+            || item.ChannelName
+            || item.TeamName
+            || item.userPrincipalName
+            || item.handle
+            || item.topic
+            || item.id
+            || `Item ${index + 1}`;
+    }
+
+    function _renderCollabResourceStats(item, preferredKeys = []) {
+        if (!item || typeof item !== 'object') {
+            return '';
+        }
+        const defaults = ['display_name', 'displayName', 'name', 'real_name', 'ChannelName', 'TeamName', 'userPrincipalName', 'chatType', 'membershipType', 'userType', 'handle', 'MemberCount', 'PinType', 'id'];
+        const keys = [...preferredKeys, ...defaults];
+        const seen = new Set();
+        const stats = [];
+
+        keys.forEach(key => {
+            const value = item[key];
+            if (stats.length >= 6 || value === undefined || value === null || seen.has(key) || typeof value === 'object') {
+                return;
+            }
+            seen.add(key);
+            stats.push(`<span>${_humanizeFieldName(key)} <strong>${value}</strong></span>`);
+        });
+
+        Object.entries(item).forEach(([key, value]) => {
+            if (stats.length >= 6 || seen.has(key) || value === undefined || value === null || typeof value === 'object') {
+                return;
+            }
+            stats.push(`<span>${_humanizeFieldName(key)} <strong>${value}</strong></span>`);
+        });
+
+        return stats.length ? `<div class="github-finding-stats">${stats.join('')}</div>` : '';
+    }
+
+    function _buildCollabSampleNarrative(sample) {
+        const summaries = sample.slice(0, 3).map(item => {
+            if (!item || typeof item !== 'object') {
+                return `Observed item: ${String(item)}`;
+            }
+            const pairs = Object.entries(item)
+                .filter(([key, value]) => key !== '_kind' && key !== 'display_name' && value !== undefined && value !== null && typeof value !== 'object')
+                .slice(0, 4)
+                .map(([key, value]) => `${_humanizeFieldName(key)} ${value}`);
+            return pairs.length ? pairs.join(', ') : 'Observed resource metadata was returned';
+        });
+        return summaries.join('. ') + (summaries.length ? '.' : '');
+    }
+
+    function _renderCollaborationAccessSection(notes, errors) {
+        return `
+            <section class="github-findings-section">
+                <div class="github-findings-section__title">Access Limitations</div>
+                ${notes.map(item => `
+                    <article class="github-finding-item github-finding-item--compact">
+                        <div class="github-finding-item__header">
+                            <div>
+                                <h5>Scope Note</h5>
+                                <p>${item}</p>
+                            </div>
+                        </div>
+                    </article>
+                `).join('')}
+                ${errors.map(item => `
+                    <article class="github-finding-item github-finding-item--compact">
+                        <div class="github-finding-item__header">
+                            <div>
+                                <h5>Permission Gap</h5>
+                                <p>${item}</p>
+                            </div>
+                            <div class="github-finding-badges">
+                                <span class="github-chip github-chip--warn">attention</span>
+                            </div>
+                        </div>
+                    </article>
+                `).join('')}
+            </section>
+        `;
     }
 
     function _buildGitlabServiceNarrative(serviceName, count, scope, baseUrl, summary) {
@@ -2161,20 +3365,6 @@ const Compliance = (() => {
         return { pass: 94, warn: 63, fail: 26, unknown: 45 }[status] || 45;
     }
 
-    function _statusToBannerClass(status) {
-        if (status === 'pass') return 'status-pass';
-        if (status === 'fail') return 'status-fail';
-        if (status === 'warn') return 'status-unknown';
-        return 'status-info';
-    }
-
-    function _statusToSymbol(status) {
-        if (status === 'pass') return '\u2713';
-        if (status === 'fail') return '\u2715';
-        if (status === 'warn') return '!';
-        return 'i';
-    }
-
     function _formatGithubMetrics(metrics) {
         if (!metrics || Object.keys(metrics).length === 0) return 'No metrics';
         return Object.entries(metrics).slice(0, 4).map(([key, value]) => `${key.replace(/_/g, ' ')}: ${value}`).join(' · ');
@@ -2217,10 +3407,17 @@ const Compliance = (() => {
         document.getElementById('cc-tabs').style.opacity = '';
         document.getElementById('compliance-processing').style.display = 'none';
         document.getElementById('compliance-results').style.display =
-            (activeProvider === 'github' && providerResults.github)
-            || (activeProvider === 'gitlab' && providerResults.gitlab)
-                ? 'block'
-                : 'none';
+              (activeProvider === 'aws' && providerResults.aws)
+              || (activeProvider === 'azure' && providerResults.azure)
+              || (activeProvider === 'github' && providerResults.github)
+              || (activeProvider === 'gcp' && providerResults.gcp)
+              || (activeProvider === 'ibm' && providerResults.ibm)
+              || (activeProvider === 'oci' && providerResults.oci)
+              || (activeProvider === 'gitlab' && providerResults.gitlab)
+              || (activeProvider === 'slack' && providerResults.slack)
+              || (activeProvider === 'teams' && providerResults.teams)
+                  ? 'block'
+                  : 'none';
         document.getElementById('github-dashboard-card').style.display = 'none';
         activeDashboardKey = null;
         _renderProviderHero();
@@ -2231,11 +3428,26 @@ const Compliance = (() => {
         if (activeProvider === 'azure' && providerResults.azure) {
             _renderCachedAzureResult();
         }
+        if (activeProvider === 'gcp' && providerResults.gcp) {
+            _renderCachedGcpResult();
+        }
+        if (activeProvider === 'ibm' && providerResults.ibm) {
+            _renderCachedIbmResult();
+        }
+        if (activeProvider === 'oci' && providerResults.oci) {
+            _renderCachedOciResult();
+        }
         if (activeProvider === 'github' && providerResults.github) {
             _renderCachedGithubResult();
         }
         if (activeProvider === 'gitlab' && providerResults.gitlab) {
             _renderCachedGitlabResult();
+        }
+        if (activeProvider === 'slack' && providerResults.slack) {
+            _renderCachedSlackResult();
+        }
+        if (activeProvider === 'teams' && providerResults.teams) {
+            _renderCachedTeamsResult();
         }
     }
 

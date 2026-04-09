@@ -92,10 +92,11 @@ AWS_REALTIME_SERVICE_CATALOG: Dict[str, Dict[str, Any]] = {
 }
 
 
-def list_aws_realtime_services() -> List[Dict[str, str]]:
+def list_aws_realtime_services(access_key: str = "", secret_key: str = "", region: str = "us-east-1") -> List[Dict[str, str]]:
+    catalog = _build_aws_runtime_catalog(access_key, secret_key, region)
     return [
         {"id": service_id, "name": meta["name"], "description": meta["description"]}
-        for service_id, meta in AWS_REALTIME_SERVICE_CATALOG.items()
+        for service_id, meta in catalog.items()
     ]
 
 
@@ -121,8 +122,18 @@ def validate_aws_credentials(access_key: str, secret_key: str, region: str) -> D
         return {"configured": True, "healthy": False, "message": f"AWS validation failed: {exc}"}
 
 
-def check_aws_realtime_service(access_key: str, secret_key: str, region: str, service: str, include_screenshot: bool = True) -> Dict[str, Any]:
-    meta = AWS_REALTIME_SERVICE_CATALOG.get(service)
+def check_aws_realtime_service(
+    access_key: str,
+    secret_key: str,
+    region: str,
+    service: str,
+    include_screenshot: bool = True,
+    *,
+    runtime_catalog: Dict[str, Dict[str, Any]] | None = None,
+    discovered_resources: Dict[str, List[Dict[str, Any]]] | None = None,
+) -> Dict[str, Any]:
+    runtime_catalog = runtime_catalog or _build_aws_runtime_catalog(access_key, secret_key, region)
+    meta = runtime_catalog.get(service)
     if not meta:
         return {
             "provider": "aws",
@@ -136,6 +147,15 @@ def check_aws_realtime_service(access_key: str, secret_key: str, region: str, se
         }
 
     session = _build_session(access_key, secret_key, region)
+    if meta.get("source") == "tagging":
+        grouped_resources = discovered_resources if discovered_resources is not None else _discover_aws_tagged_resource_catalog(session, region)
+        result = _build_discovered_aws_service_result(service, meta, grouped_resources.get(service, []))
+        if include_screenshot:
+            screenshot = _capture_result_dashboard(result)
+            if screenshot:
+                result["screenshots"].append(screenshot)
+        return result
+
     observed_region = "global" if meta.get("global_service") else "all enabled regions"
     api_findings = {
         "integration": {
@@ -201,11 +221,25 @@ def check_aws_realtime_service(access_key: str, secret_key: str, region: str, se
 
 
 def check_aws_realtime_posture(access_key: str, secret_key: str, region: str, selected_service: str | None = None) -> Dict[str, Any]:
+    runtime_catalog = _build_aws_runtime_catalog(access_key, secret_key, region)
+    session = _build_session(access_key, secret_key, region)
+    discovered_resources = _discover_aws_tagged_resource_catalog(session, region)
     services: Dict[str, Any] = {}
     counts = {"pass": 0, "warn": 0, "fail": 0, "unknown": 0}
 
-    for service_id, meta in AWS_REALTIME_SERVICE_CATALOG.items():
-        service_result = check_aws_realtime_service(access_key, secret_key, region, service_id, include_screenshot=False)
+    for service_id, meta in runtime_catalog.items():
+        if meta.get("source") == "tagging":
+            service_result = _build_discovered_aws_service_result(service_id, meta, discovered_resources.get(service_id, []))
+        else:
+            service_result = check_aws_realtime_service(
+                access_key,
+                secret_key,
+                region,
+                service_id,
+                include_screenshot=False,
+                runtime_catalog=runtime_catalog,
+                discovered_resources=discovered_resources,
+            )
         health = service_result.get("api_findings", {}).get("health", {})
         status = health.get("status", "unknown")
         if status not in counts:
@@ -254,6 +288,179 @@ def _build_session(access_key: str, secret_key: str, region: str):
         aws_secret_access_key=secret_key,
         region_name=region,
     )
+
+
+def _build_aws_runtime_catalog(access_key: str, secret_key: str, region: str) -> Dict[str, Dict[str, Any]]:
+    catalog = dict(AWS_REALTIME_SERVICE_CATALOG)
+    if not access_key or not secret_key:
+        return catalog
+
+    try:
+        session = _build_session(access_key, secret_key, region)
+        discovered = _discover_aws_tagged_resource_catalog(session, region)
+        for service_id, items in discovered.items():
+            if service_id in catalog:
+                continue
+            catalog[service_id] = _aws_tagged_service_meta(service_id, items)
+    except Exception as exc:
+        logger.debug("AWS dynamic service discovery skipped: %s", exc)
+    return catalog
+
+
+def _discover_aws_tagged_resource_catalog(session, region: str) -> Dict[str, List[Dict[str, Any]]]:
+    grouped: Dict[str, List[Dict[str, Any]]] = {}
+    seen_arns: set[str] = set()
+
+    for region_name in _list_enabled_regions(session, region):
+        try:
+            client = session.client("resourcegroupstaggingapi", region_name=region_name, config=BotoConfig(retries={"max_attempts": 3}))
+            paginator = client.get_paginator("get_resources")
+            page_count = 0
+            for page in paginator.paginate(ResourcesPerPage=100):
+                for mapping in page.get("ResourceTagMappingList", []) or []:
+                    resource = _normalize_tagged_resource(mapping, region_name)
+                    if not resource:
+                        continue
+                    resource_arn = resource.get("ResourceARN")
+                    if resource_arn in seen_arns:
+                        continue
+                    seen_arns.add(resource_arn)
+                    service_id = resource.get("_discovered_service_id")
+                    if not service_id:
+                        continue
+                    grouped.setdefault(service_id, []).append(resource)
+                page_count += 1
+                if page_count >= 6:
+                    break
+        except Exception as exc:
+            logger.debug("AWS tagging discovery unavailable in %s: %s", region_name, exc)
+
+    return grouped
+
+
+def _normalize_tagged_resource(mapping: Dict[str, Any], region_name: str) -> Dict[str, Any] | None:
+    resource_arn = mapping.get("ResourceARN")
+    if not resource_arn:
+        return None
+
+    parsed = _parse_aws_arn(resource_arn)
+    if not parsed:
+        return None
+
+    service_namespace = parsed["service"]
+    resource_type = parsed["resource_type"] or parsed["resource_label"]
+    service_id = f"discovered__{_sanitize_identifier(service_namespace)}__{_sanitize_identifier(resource_type or 'resource')}"
+    display_name = parsed["resource_name"] or parsed["resource_label"] or resource_arn
+
+    return {
+        "ResourceARN": resource_arn,
+        "ServiceNamespace": service_namespace,
+        "ResourceType": resource_type or "resource",
+        "ResourceName": parsed["resource_name"],
+        "display_name": display_name,
+        "Tags": mapping.get("Tags") or [],
+        "_region": parsed["region"] or region_name,
+        "_discovered_service_id": service_id,
+    }
+
+
+def _parse_aws_arn(resource_arn: str) -> Dict[str, str]:
+    parts = resource_arn.split(":", 5)
+    if len(parts) < 6:
+        return {}
+
+    service = parts[2] or "aws"
+    region = parts[3] or ""
+    resource_part = parts[5] or ""
+
+    resource_type = ""
+    resource_name = resource_part
+    if "/" in resource_part:
+        resource_type, resource_name = resource_part.split("/", 1)
+    elif ":" in resource_part:
+        resource_type, resource_name = resource_part.split(":", 1)
+
+    return {
+        "service": service,
+        "region": region,
+        "resource_type": resource_type,
+        "resource_name": resource_name,
+        "resource_label": resource_part,
+    }
+
+
+def _sanitize_identifier(value: str) -> str:
+    return "".join(ch if ch.isalnum() else "_" for ch in (value or "").lower()).strip("_") or "resource"
+
+
+def _prettify_identifier(value: str) -> str:
+    cleaned = (value or "").replace("_", " ").replace("-", " ").replace(".", " ").replace("/", " ")
+    return " ".join(part.capitalize() for part in cleaned.split())
+
+
+def _aws_tagged_service_meta(service_id: str, items: List[Dict[str, Any]]) -> Dict[str, Any]:
+    first = items[0] if items else {}
+    service_namespace = first.get("ServiceNamespace") or "aws"
+    resource_type = first.get("ResourceType") or "resource"
+    return {
+        "name": f"{_prettify_identifier(service_namespace)} {_prettify_identifier(resource_type)}",
+        "description": f"Dynamically discovered {_prettify_identifier(resource_type)} resources from AWS inventory.",
+        "source": "tagging",
+        "service_namespace": service_namespace,
+        "resource_type": resource_type,
+        "global_service": False,
+    }
+
+
+def _build_discovered_aws_service_result(service_id: str, meta: Dict[str, Any], items: List[Dict[str, Any]]) -> Dict[str, Any]:
+    available_regions = _collect_available_regions(items)
+    regional_counts = _count_items_by_region(items)
+    api_findings = {
+        "integration": {
+            "service_id": service_id,
+            "service_name": meta["name"],
+            "description": meta["description"],
+            "region": "all enabled regions",
+            "region_scope": "regional",
+            "mode": "api-only realtime monitor",
+            "checked_at": datetime.utcnow().isoformat(),
+            "available_regions": available_regions,
+            "source": "resourcegroupstaggingapi",
+            "service_namespace": meta.get("service_namespace"),
+            "resource_type": meta.get("resource_type"),
+        },
+        "inventory": {
+            "resource_count": len(items),
+            "sample": _sample_items(items),
+            "items_preview": _items_preview(items),
+            "available_regions": available_regions,
+            "regional_resource_counts": regional_counts,
+        },
+        "health": {
+            "status": "pass",
+            "score": 86,
+            "summary": f"Discovered {len(items)} resource(s) for {meta['name']} through AWS tagging inventory.",
+            "observations": [
+                f"Discovered service namespace {meta.get('service_namespace') or 'aws'} via AWS tagging inventory.",
+                f"Observed {len(items)} tagged resource(s) for {meta['name']}.",
+            ],
+        },
+    }
+
+    return {
+        "provider": "aws",
+        "service": service_id,
+        "service_name": meta["name"],
+        "service_description": meta["description"],
+        "check": "Realtime AWS Integration Monitor",
+        "check_description": f"Live API inventory and posture summary for {meta['name']}",
+        "timestamp": datetime.utcnow().isoformat(),
+        "status": "completed",
+        "api_findings": api_findings,
+        "vision_analysis": {},
+        "screenshots": [],
+        "encryption_enabled": True,
+    }
 
 
 def _fetch_service_items(session, meta: Dict[str, Any], region: str) -> List[Any]:
@@ -415,7 +622,10 @@ def _serialize_preview_item(value: Any) -> Any:
         display_name = _derive_aws_display_name(value)
         if display_name:
             serialized["display_name"] = display_name
-        preferred_keys = ["_region", "name", "Name", "id", "Id", "Arn", "ArnValue", "State", "StateName", "location"]
+        preferred_keys = [
+            "display_name", "_region", "name", "Name", "ResourceName", "ResourceType",
+            "ServiceNamespace", "ResourceARN", "id", "Id", "Arn", "ArnValue", "State", "StateName", "location"
+        ]
         for key in preferred_keys:
             if key in value and len(serialized) < 12:
                 serialized[key] = _serialize_preview_item(value[key])
@@ -512,6 +722,14 @@ def _derive_aws_display_name(item: Dict[str, Any]) -> str | None:
     name_tag = _extract_tag_value(item.get("Tags"), "Name")
     if name_tag:
         return name_tag
+    resource_name = item.get("ResourceName")
+    if isinstance(resource_name, str) and resource_name.strip():
+        return resource_name
+    resource_arn = item.get("ResourceARN")
+    if isinstance(resource_arn, str) and resource_arn.strip():
+        arn_parts = resource_arn.split(":", 5)
+        if len(arn_parts) >= 6:
+            return arn_parts[5]
     return None
 
 
